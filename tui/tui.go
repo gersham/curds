@@ -25,6 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Banner is the figlet rendered at the top of every TUI screen.
@@ -278,7 +279,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case logMsg:
-		m.logBuffer = append(m.logBuffer, string(msg))
+		// ANSI-aware soft wrap so colorized lines stay legible at any width.
+		width := m.logs.Width - 2
+		if width < 20 {
+			width = 20
+		}
+		wrapped := ansi.Wrap(string(msg), width, " ")
+		m.logBuffer = append(m.logBuffer, wrapped)
 		// Tail the most recent N lines so very long runs don't OOM.
 		const maxLines = 500
 		if len(m.logBuffer) > maxLines {
@@ -410,13 +417,20 @@ func waitForLog(ch <-chan string) tea.Cmd {
 }
 
 // chanWriter splits writes on '\n' and forwards each line to a channel.
-// Drops lines if the channel is full, so the UI never blocks the producer.
+// Drops lines if the channel is full so the UI never blocks the producer.
+//
+// Implements curds.ColorAware to opt into ANSI color from the library —
+// otherwise IsTerminalWriter sees a plain io.Writer and emits uncolored
+// logfmt.
 type chanWriter struct {
 	ch  chan<- string
 	buf strings.Builder
 }
 
 func newChanWriter(ch chan<- string) *chanWriter { return &chanWriter{ch: ch} }
+
+// WantsColor satisfies curds.ColorAware.
+func (*chanWriter) WantsColor() bool { return true }
 
 func (cw *chanWriter) Write(p []byte) (int, error) {
 	cw.buf.Write(p)

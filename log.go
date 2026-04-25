@@ -23,9 +23,20 @@ var (
 	styleKey   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 )
 
+// ColorAware is implemented by writers that want ANSI escapes even though
+// they aren't *os.File terminals — for example a TUI log panel that
+// renders bytes directly into a colored viewport.
+type ColorAware interface {
+	WantsColor() bool
+}
+
 // IsTerminalWriter reports whether w is a TTY (so it accepts ANSI colors).
-// Non-*os.File writers are treated as not-a-terminal.
+// Non-*os.File writers are treated as not-a-terminal unless they
+// implement ColorAware and explicitly opt in.
 func IsTerminalWriter(w io.Writer) bool {
+	if ca, ok := w.(ColorAware); ok {
+		return ca.WantsColor()
+	}
 	f, ok := w.(*os.File)
 	if !ok {
 		return false

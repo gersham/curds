@@ -2,6 +2,8 @@
 
 > _to complement your fries and gravy_
 
+![curds in action](docs/curds-preview.png)
+
 Generate images from the command line via OpenAI's gpt-image-2 (direct) or
 Replicate-hosted models. Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing

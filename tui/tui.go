@@ -49,6 +49,16 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("241")).
 			Padding(0, 1)
+	statusBarOK = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#0B0B0B")).
+			Background(lipgloss.Color("#A6E22E")).
+			Bold(true).
+			Padding(0, 1)
+	statusBarErr = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#C0392B")).
+			Bold(true).
+			Padding(0, 1)
 )
 
 // Defaults seeds the TUI's initial values.
@@ -337,26 +347,41 @@ func (m model) View() string {
 		b.WriteString(hintStyle.Render("ctrl+c to cancel"))
 
 	case phaseResult:
-		if m.result != nil && m.result.Err != nil {
-			b.WriteString(errorStyle.Render("✗ Failed"))
-			b.WriteString("\n  ")
-			b.WriteString(m.result.Err.Error())
-		} else if m.result != nil {
-			b.WriteString(successStyle.Render(fmt.Sprintf(
-				"✓ Done in %s", m.result.Duration.Round(time.Millisecond),
-			)))
-			b.WriteString("\n\n")
-			b.WriteString(headingStyle.Render("Saved"))
-			b.WriteString("\n")
-			for _, p := range m.result.Paths {
-				b.WriteString("  " + p + "\n")
-			}
-		}
+		// Keep the log panel visible — the user wanted history preserved.
+		b.WriteString(headingStyle.Render("Logs"))
+		b.WriteString("\n")
+		b.WriteString(logBoxStyle.Render(m.logs.View()))
+		b.WriteString("\n\n")
+		b.WriteString(m.renderStatusBar())
 		b.WriteString("\n")
 		b.WriteString(hintStyle.Render("[g] generate another · [q] quit"))
 	}
 
 	return b.String()
+}
+
+// renderStatusBar formats the post-generation status line.
+//
+// On success: "✓ Done in 8.4s · /path/to/file.webp" with a green pill.
+// On failure: "✗ Failed: <error>" with a red pill.
+// The bar fills the log-panel width so it visually anchors the bottom.
+func (m model) renderStatusBar() string {
+	if m.result == nil {
+		return ""
+	}
+	width := m.logs.Width
+	if width < 20 {
+		width = 60
+	}
+	if m.result.Err != nil {
+		return statusBarErr.Width(width).Render(fmt.Sprintf("✗ Failed: %s",
+			ansi.Truncate(m.result.Err.Error(), width-12, "…"),
+		))
+	}
+	paths := strings.Join(m.result.Paths, "  ")
+	dur := m.result.Duration.Round(time.Millisecond).String()
+	msg := fmt.Sprintf("✓ Done in %s · %s", dur, paths)
+	return statusBarOK.Width(width).Render(ansi.Truncate(msg, width-2, "…"))
 }
 
 func (m model) startGeneration() (tea.Model, tea.Cmd) {

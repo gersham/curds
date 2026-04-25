@@ -1,0 +1,26 @@
+# Build artifacts
+/curds
+/curds.exe
+/dist/
+*.test
+
+# Local env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Tooling state — keep curds-specific notepads/state out of commits
+.omc/
+.omx/
+
+# Old project artifact
+/replicate-image-gen

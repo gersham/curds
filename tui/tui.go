@@ -327,6 +327,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prompt.SetWidth(w)
 		m.logs.Width = w
 		m.logs.Height = max(6, msg.Height-len(strings.Split(banner, "\n"))-9)
+		// Forward resize events to the settings form so it lays out at
+		// the right width.
+		if m.phase == phaseSettings && m.form != nil {
+			fm, cmd := m.form.Update(msg)
+			if f, ok := fm.(*huh.Form); ok {
+				m.form = f
+			}
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -336,7 +345,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c", "esc":
 				return m, tea.Quit
 			case "ctrl+s":
-				return m.openSettings(), tea.ClearScreen
+				nm, formInit := m.openSettings()
+				return nm, tea.Batch(tea.ClearScreen, formInit)
 			case "enter":
 				if strings.TrimSpace(m.prompt.Value()) == "" {
 					return m, nil
@@ -639,10 +649,11 @@ func (m model) deleteCurrentImage() model {
 	return m
 }
 
-// openSettings populates a fresh huh.Form bound to the current settings,
-// switches to phaseSettings, and returns the model so the caller can pair
-// it with a tea.ClearScreen cmd.
-func (m model) openSettings() model {
+// openSettings populates a fresh huh.Form bound to the current settings
+// and switches to phaseSettings. Returns the form's Init cmd so the
+// caller can route it to bubbletea — without that, the form never gets
+// its initial focus + blink + first-group activation.
+func (m model) openSettings() (model, tea.Cmd) {
 	values := &settingsFormValues{
 		Provider:          m.settings.Provider,
 		OutputDirectory:   m.settings.OutputDirectory,
@@ -658,12 +669,8 @@ func (m model) openSettings() model {
 	}
 	m.formValues = values
 	m.form = buildSettingsForm(values)
-	if err := m.form.Init(); err != nil {
-		// Init returns a tea.Cmd, not an error — defensive guard only.
-		_ = err
-	}
 	m.phase = phaseSettings
-	return m
+	return m, m.form.Init()
 }
 
 // applySettings parses the form values back into SettingsValues, calls the

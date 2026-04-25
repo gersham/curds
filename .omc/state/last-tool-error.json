@@ -1,0 +1,7 @@
+{
+  "tool_name": "mcp__plugin_oh-my-claudecode_x__ask_codex",
+  "tool_input_preview": "{\"agent_role\":\"code-reviewer\",\"reasoning_effort\":\"high\",\"working_directory\":\"/Users/gersham/Sources/personal/replicate-image-gen\",\"context_files\":[\"/Users/gersham/Sources/personal/replicate-image-gen/...",
+  "error": "**Agent Role:** code-reviewer\n**Reasoning Effort:** high\n**Files:** /Users/gersham/Sources/personal/replicate-image-gen/main.go, /Users/gersham/Sources/personal/replicate-image-gen/imagegen/imagegen.go, /Users/gersham/Sources/personal/replicate-image-gen/imagegen/replicate.go, /Users/gersham/Sources/personal/replicate-image-gen/imagegen/openai.go, /Users/gersham/Sources/personal/replicate-image-gen/imagegen/imagegen_test.go, /Users/gersham/Sources/personal/replicate-image-gen/go.mod\n**Prompt Fil...",
+  "timestamp": "2026-04-25T15:42:19.931Z",
+  "retry_count": 1
+}

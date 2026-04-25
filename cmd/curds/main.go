@@ -67,6 +67,7 @@ type cliOptions struct {
 	verbose           bool
 	noTUI             bool
 	open              bool
+	inline            string // "auto" | "on" | "off"
 }
 
 func main() {
@@ -188,6 +189,10 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		"paths", strings.Join(paths, ","),
 	)
 
+	if shouldShowInline(opts.inline, false) && curds.SupportsInlineImages() {
+		showInline(paths, logger)
+	}
+
 	if opts.open {
 		if err := openInViewer(paths); err != nil {
 			logger.error("open.failed", "err", err.Error())
@@ -196,6 +201,36 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 	return nil
+}
+
+// shouldShowInline encodes the -inline flag's tristate. tui=true means we're
+// running in TUI mode (auto -> on); tui=false means non-TUI (auto -> off).
+func shouldShowInline(setting string, tui bool) bool {
+	switch strings.ToLower(strings.TrimSpace(setting)) {
+	case "on", "true", "yes", "1":
+		return true
+	case "off", "false", "no", "0":
+		return false
+	}
+	return tui
+}
+
+// showInline emits OSC 1337 sequences for each rendered file to stdout.
+// Used in non-TUI mode; the TUI handles preview rendering itself.
+func showInline(paths []string, logger *logfmtLogger) {
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			logger.error("inline.read_failed", "path", p, "err", err.Error())
+			continue
+		}
+		seq := curds.EncodeInlineImage(data, curds.InlineImageOpts{
+			Name:           filepath.Base(p),
+			PreserveAspect: true,
+		})
+		fmt.Print(seq)
+		fmt.Println()
+	}
 }
 
 // runInteractive owns the full TUI flow: clear screen → optional token
@@ -242,13 +277,14 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
 
 	defaults := tui.Defaults{
-		Provider:     opts.provider,
-		Token:        token,
-		AspectRatio:  opts.aspectRatio,
-		Quality:      opts.quality,
-		NumImages:    opts.numImages,
-		OutputFormat: opts.outputFormat,
-		OutputPath:   opts.outputPath,
+		Provider:      opts.provider,
+		Token:         token,
+		AspectRatio:   opts.aspectRatio,
+		Quality:       opts.quality,
+		NumImages:     opts.numImages,
+		OutputFormat:  opts.outputFormat,
+		OutputPath:    opts.outputPath,
+		InlinePreview: shouldShowInline(opts.inline, true) && curds.SupportsInlineImages(),
 	}
 
 	gen := func(ctx context.Context, req tui.GenerateRequest, logsink io.Writer) tui.GenerateResult {
@@ -421,6 +457,7 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.verbose, "verbose", false, "Verbose debug logs to stderr")
 	flag.BoolVar(&opts.noTUI, "no-tui", false, "Never enter interactive TUI; fail with an error instead")
 	flag.BoolVar(&opts.open, "open", false, "Open generated images in the OS default viewer (macOS: Preview)")
+	flag.StringVar(&opts.inline, "inline", "auto", "Show generated images inline in the terminal: auto|on|off (auto = on in TUI, off otherwise)")
 
 	setupUsage()
 	flag.Parse()
@@ -491,6 +528,10 @@ FLAGS
     -no-tui                     never enter interactive TUI; fail instead
     -open                       open generated images in OS image viewer
                                 (macOS: Preview, linux: xdg-open, win: start)
+    -inline   {auto|on|off}     show images inline in the terminal
+                                (auto = on in TUI mode if supported, off
+                                otherwise; supported terminals: iTerm2,
+                                WezTerm, VS Code, Konsole, Tabby, Ghostty)
     -verbose                    include debug-level logs on stderr
     -timeout  DURATION          overall timeout (default 10m, 0 disables)
 

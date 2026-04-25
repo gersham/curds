@@ -16,6 +16,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,7 +28,28 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/gersham/curds"
 )
+
+// curdsEncode wraps the curds package helper so the file isn't
+// re-imported throughout the TUI internals.
+func curdsEncode(data []byte, path string, widthCells, heightCells int) string {
+	w := widthCells
+	if w < 10 {
+		w = 0 // let the terminal auto-size if we don't have width yet
+	}
+	h := heightCells
+	if h < 5 {
+		h = 0
+	}
+	return curds.EncodeInlineImage(data, curds.InlineImageOpts{
+		Name:           filepath.Base(path),
+		WidthCells:     w,
+		HeightCells:    h,
+		PreserveAspect: true,
+	})
+}
 
 // Banner is the figlet rendered at the top of every TUI screen.
 const banner = ` ██████╗██╗   ██╗██████╗ ██████╗ ███████╗
@@ -69,6 +92,7 @@ type Defaults struct {
 	OutputFormat string
 	OutputPath   string // default file path; the TUI may override
 	NeedToken    bool   // true when caller has no token yet
+	InlinePreview bool  // true to display the rendered images inline
 }
 
 // TokenCaptured is returned by RunTokenCapture. It is empty when the user
@@ -174,9 +198,9 @@ type model struct {
 	defaults Defaults
 	gen      GenerateFn
 
-	prompt   textarea.Model
-	spin     spinner.Model
-	logs     viewport.Model
+	prompt textarea.Model
+	spin   spinner.Model
+	logs   viewport.Model
 
 	logBuffer []string
 	logChan   chan string
@@ -184,7 +208,20 @@ type model struct {
 	result *GenerateResult
 	cancel context.CancelFunc
 
+	// Inline image preview state, populated when phaseResult is reached and
+	// defaults.InlinePreview is true.
+	previews    []previewImage
+	previewIdx  int
+	previewSeen bool // true when current image has been emitted at least once
+
 	width, height int
+}
+
+// previewImage holds a pre-encoded OSC 1337 sequence so the TUI doesn't
+// re-base64 the file on every Bubble Tea render frame.
+type previewImage struct {
+	Path    string
+	Encoded string
 }
 
 type logMsg string
@@ -275,6 +312,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "g", "G", "enter":
 				return m.resetForAnother(), textarea.Blink
+			case "tab", "right", "l":
+				if len(m.previews) > 1 {
+					m.previewIdx = (m.previewIdx + 1) % len(m.previews)
+					m.previewSeen = false
+				}
+				return m, nil
+			case "shift+tab", "left", "h":
+				if len(m.previews) > 1 {
+					m.previewIdx = (m.previewIdx - 1 + len(m.previews)) % len(m.previews)
+					m.previewSeen = false
+				}
+				return m, nil
 			case "q", "Q", "esc", "ctrl+c":
 				return m, tea.Quit
 			}
@@ -310,6 +359,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case generateDoneMsg:
 		m.phase = phaseResult
 		m.result = &msg.result
+		if m.defaults.InlinePreview && msg.result.Err == nil {
+			m.previews = encodeAllPreviews(msg.result.Paths, m.logs.Width, m.logs.Height)
+			m.previewIdx = 0
+			m.previewSeen = false
+		}
 		return m, nil
 	}
 	return m, nil
@@ -345,17 +399,45 @@ func (m model) View() string {
 		b.WriteString(hintStyle.Render("ctrl+c to cancel"))
 
 	case phaseResult:
-		// Keep the log panel visible — the user wanted history preserved.
-		b.WriteString(headingStyle.Render("Logs"))
-		b.WriteString("\n")
-		b.WriteString(logBoxStyle.Render(m.logs.View()))
+		// When inline preview is active, the image takes the slot the log
+		// panel held during generation. Otherwise keep the log history
+		// visible so the user can scroll back through events.
+		if len(m.previews) > 0 {
+			b.WriteString(m.renderPreview())
+		} else {
+			b.WriteString(headingStyle.Render("Logs"))
+			b.WriteString("\n")
+			b.WriteString(logBoxStyle.Render(m.logs.View()))
+		}
 		b.WriteString("\n\n")
 		b.WriteString(m.renderStatusBar())
 		b.WriteString("\n")
-		b.WriteString(hintStyle.Render("[g] generate another · [q] quit"))
+		hint := "[g] generate another · [q] quit"
+		if len(m.previews) > 1 {
+			hint = "[tab] next image · [g] generate another · [q] quit"
+		}
+		b.WriteString(hintStyle.Render(hint))
 	}
 
 	return b.String()
+}
+
+// renderPreview returns the OSC 1337 escape sequence for the currently
+// selected preview image, framed with a heading and an "image N of M"
+// indicator. Bubble Tea writes this directly to the terminal; the
+// terminal renders the image inline at the cursor position.
+func (m model) renderPreview() string {
+	if len(m.previews) == 0 {
+		return ""
+	}
+	cur := m.previews[m.previewIdx]
+	heading := headingStyle.Render("Preview")
+	if len(m.previews) > 1 {
+		heading += hintStyle.Render(fmt.Sprintf("  (image %d/%d)", m.previewIdx+1, len(m.previews)))
+	}
+	// Encoded already includes the BEL terminator. Trailing newline so
+	// subsequent lines don't sit on top of the image's last row.
+	return heading + "\n" + cur.Encoded + "\n"
 }
 
 // renderStatusBar formats the post-generation status line.
@@ -413,8 +495,27 @@ func (m model) resetForAnother() model {
 	m.logBuffer = nil
 	m.logs.SetContent("")
 	m.result = nil
+	m.previews = nil
+	m.previewIdx = 0
+	m.previewSeen = false
 	m.phase = phasePrompt
 	return m
+}
+
+// encodeAllPreviews reads each path from disk and pre-encodes the OSC 1337
+// sequence sized to fit the supplied cell dimensions. Errors per file are
+// silently skipped so a single bad path doesn't kill the whole result view.
+func encodeAllPreviews(paths []string, widthCells, heightCells int) []previewImage {
+	out := make([]previewImage, 0, len(paths))
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		seq := curdsEncode(data, p, widthCells, heightCells)
+		out = append(out, previewImage{Path: p, Encoded: seq})
+	}
+	return out
 }
 
 func runGenerate(ctx context.Context, gen GenerateFn, req GenerateRequest, logChan chan string) tea.Cmd {

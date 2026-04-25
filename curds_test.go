@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -630,6 +631,81 @@ func TestResolveSizeRoundsCustomSize(t *testing.T) {
 	}
 	if got := ResolveSize(&Request{AspectRatio: "16:9"}); got != "2048x1152" {
 		t.Fatalf("expected 2048x1152, got %q", got)
+	}
+}
+
+func TestEncodeInlineImage(t *testing.T) {
+	data := []byte("\x89PNGfake")
+	out := EncodeInlineImage(data, InlineImageOpts{
+		Name:           "x.png",
+		WidthCells:     40,
+		HeightCells:    20,
+		PreserveAspect: true,
+	})
+	if !strings.HasPrefix(out, "\x1b]1337;File=") {
+		t.Fatalf("missing OSC 1337 prefix: %q", out[:30])
+	}
+	if !strings.Contains(out, "inline=1") {
+		t.Errorf("expected inline=1: %q", out)
+	}
+	if !strings.Contains(out, "width=40") || !strings.Contains(out, "height=20") {
+		t.Errorf("expected width/height: %q", out)
+	}
+	if !strings.Contains(out, "preserveAspectRatio=1") {
+		t.Errorf("expected preserveAspectRatio: %q", out)
+	}
+	if !strings.HasSuffix(out, "\x07") {
+		t.Errorf("expected BEL terminator: %q", out[len(out)-2:])
+	}
+	// Encoded body should be present (base64 of "\x89PNGfake")
+	expected := base64.StdEncoding.EncodeToString(data)
+	if !strings.Contains(out, expected) {
+		t.Errorf("missing base64 body %q in: %q", expected, out)
+	}
+}
+
+func TestEncodeInlineImageTmuxWrap(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+	out := EncodeInlineImage([]byte("data"), InlineImageOpts{Name: "a.png"})
+	if !strings.HasPrefix(out, "\x1bPtmux;") {
+		t.Fatalf("expected tmux passthrough prefix: %q", out[:20])
+	}
+	if !strings.HasSuffix(out, "\x1b\\") {
+		t.Fatalf("expected ST terminator: %q", out[len(out)-4:])
+	}
+	// ESCs inside the body must be doubled.
+	if strings.Count(out, "\x1b\x1b") < 1 {
+		t.Errorf("expected doubled ESC inside tmux envelope: %q", out)
+	}
+}
+
+func TestSupportsInlineImages(t *testing.T) {
+	cases := []struct {
+		env  map[string]string
+		want bool
+	}{
+		{map[string]string{"TERM_PROGRAM": "iTerm.app"}, true},
+		{map[string]string{"TERM_PROGRAM": "WezTerm"}, true},
+		{map[string]string{"TERM_PROGRAM": "vscode"}, true},
+		{map[string]string{"TERM_PROGRAM": "Apple_Terminal"}, false},
+		{map[string]string{"TERM_PROGRAM": "tmux"}, false},
+		{map[string]string{"WEZTERM_EXECUTABLE": "/usr/bin/wezterm"}, true},
+		{map[string]string{"KONSOLE_VERSION": "240800"}, true},
+		{map[string]string{}, false},
+	}
+	for i, tc := range cases {
+		// Each subtest gets a fresh isolated env so cases don't leak.
+		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
+			t.Setenv("TERM_PROGRAM", "")
+			t.Setenv("WEZTERM_EXECUTABLE", "")
+			t.Setenv("KONSOLE_VERSION", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := SupportsInlineImages(); got != tc.want {
+				t.Fatalf("env=%v: got %v, want %v", tc.env, got, tc.want)
+			}
+		})
 	}
 }
 

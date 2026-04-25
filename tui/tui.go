@@ -210,9 +210,8 @@ type model struct {
 
 	// Inline image preview state, populated when phaseResult is reached and
 	// defaults.InlinePreview is true.
-	previews    []previewImage
-	previewIdx  int
-	previewSeen bool // true when current image has been emitted at least once
+	previews   []previewImage
+	previewIdx int
 
 	width, height int
 }
@@ -311,19 +310,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case phaseResult:
 			switch msg.String() {
 			case "g", "G", "enter":
-				return m.resetForAnother(), textarea.Blink
+				return m.resetForAnother(), tea.Batch(tea.ClearScreen, textarea.Blink)
 			case "tab", "right", "l":
 				if len(m.previews) > 1 {
 					m.previewIdx = (m.previewIdx + 1) % len(m.previews)
-					m.previewSeen = false
 				}
-				return m, nil
+				return m, tea.ClearScreen
 			case "shift+tab", "left", "h":
 				if len(m.previews) > 1 {
 					m.previewIdx = (m.previewIdx - 1 + len(m.previews)) % len(m.previews)
-					m.previewSeen = false
 				}
-				return m, nil
+				return m, tea.ClearScreen
+			case "d", "D":
+				return m.deleteCurrentImage(), tea.ClearScreen
 			case "q", "Q", "esc", "ctrl+c":
 				return m, tea.Quit
 			}
@@ -331,6 +330,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case spinner.TickMsg:
+		// Ignore spinner ticks once we're past the generating phase so the
+		// view stops re-rendering on its own. Subsequent renders only fire
+		// in response to user input, which lets the inline image stay put
+		// instead of flashing.
+		if m.phase != phaseGenerating {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
@@ -362,9 +368,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.defaults.InlinePreview && msg.result.Err == nil {
 			m.previews = encodeAllPreviews(msg.result.Paths, m.logs.Width, m.logs.Height)
 			m.previewIdx = 0
-			m.previewSeen = false
 		}
-		return m, nil
+		// Wipe the previous frame (Generating heading, spinner, log box) so
+		// the inline image isn't drawn on top of leftover text cells.
+		return m, tea.ClearScreen
 	}
 	return m, nil
 }
@@ -413,8 +420,12 @@ func (m model) View() string {
 		b.WriteString(m.renderStatusBar())
 		b.WriteString("\n")
 		hint := "[g] generate another · [q] quit"
-		if len(m.previews) > 1 {
-			hint = "[tab] next image · [g] generate another · [q] quit"
+		if len(m.previews) > 0 {
+			if len(m.previews) > 1 {
+				hint = "[tab] next · [d] delete · [g] generate another · [q] quit"
+			} else {
+				hint = "[d] delete · [g] generate another · [q] quit"
+			}
 		}
 		b.WriteString(hintStyle.Render(hint))
 	}
@@ -497,8 +508,39 @@ func (m model) resetForAnother() model {
 	m.result = nil
 	m.previews = nil
 	m.previewIdx = 0
-	m.previewSeen = false
 	m.phase = phasePrompt
+	return m
+}
+
+// deleteCurrentImage removes the currently-previewed image from disk and
+// from the in-memory preview list. If the deletion fails, the file stays
+// in the list and the user sees the original status bar (no error
+// surfaced — the next regenerate or quit clears it).
+func (m model) deleteCurrentImage() model {
+	if len(m.previews) == 0 {
+		return m
+	}
+	cur := m.previews[m.previewIdx]
+	if err := os.Remove(cur.Path); err != nil {
+		// Leave the entry in place so the user can retry; we don't have a
+		// dedicated error region in the result view.
+		return m
+	}
+	// Drop from preview list.
+	m.previews = append(m.previews[:m.previewIdx], m.previews[m.previewIdx+1:]...)
+	if m.previewIdx >= len(m.previews) && m.previewIdx > 0 {
+		m.previewIdx--
+	}
+	// Drop from the result's saved-paths list so the status bar mirrors
+	// reality.
+	if m.result != nil {
+		for i, p := range m.result.Paths {
+			if p == cur.Path {
+				m.result.Paths = append(m.result.Paths[:i], m.result.Paths[i+1:]...)
+				break
+			}
+		}
+	}
 	return m
 }
 

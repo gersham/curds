@@ -41,10 +41,8 @@ const subtitle = "to complement your fries and gravy"
 var (
 	bannerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC400")).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-	hintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	headingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Bold(true)
+	hintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	headingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Bold(true)
 	logBoxStyle   = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("241")).

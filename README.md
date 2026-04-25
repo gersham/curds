@@ -9,6 +9,25 @@ curds clears the screen and drops into a Bubble Tea TUI with a CURDS
 banner, multiline prompt, spinner, scrolling log panel, and a "generate
 another?" loop after each render.
 
+## Requirements
+
+- **Go 1.26+** for building (curds uses generics, structured logging, and
+  recent stdlib helpers; older toolchains will refuse to compile).
+  Install via [go.dev/dl](https://go.dev/dl/), Homebrew (`brew install go`),
+  asdf, or your distro's package manager.
+- **macOS, Linux, or Windows.** `-open` uses `open` on macOS,
+  `xdg-open` on Linux, and `cmd /C start` on Windows.
+- A terminal that supports ANSI colors and Unicode box drawing for the
+  best TUI experience (any modern terminal qualifies — iTerm2, Alacritty,
+  Kitty, Windows Terminal, GNOME Terminal, etc.).
+- An API token from at least one provider:
+  - [OpenAI](https://platform.openai.com/api-keys) — needs API
+    Organization Verification to call gpt-image-2.
+  - [Replicate](https://replicate.com/account/api-tokens) — alternative
+    backend, no verification dance.
+- Network access to `api.openai.com` and/or `api.replicate.com`
+  (and `replicate.delivery` for downloading rendered images).
+
 ## Install
 
 ```bash

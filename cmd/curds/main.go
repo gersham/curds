@@ -495,16 +495,28 @@ DESCRIPTION
   when prompt or token is missing (suppress with -no-tui).
 
 PROVIDERS
-  openai     OpenAI Image API direct
+  openai     OpenAI Image API direct   [recommended for OpenAI models]
              Endpoints: POST /v1/images/generations
-                        POST /v1/images/edits   (when -i or -mask is set)
+                        POST /v1/images/edits   (when -input-image or -mask is set)
              Default model: gpt-image-2
+             Why prefer this: lower latency, lower cost, full parameter
+             surface (any valid -size, -output-compression, -user, etc.),
+             and immediate b64_json responses (no polling).
+
   replicate  Replicate hosted
              Endpoint:  POST /v1/models/<owner>/<name>/predictions
              Default model: openai/gpt-image-2
+             Use when: you don't have direct OpenAI access yet, or you
+             want to run a non-OpenAI image model hosted on Replicate.
+             Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
+             restricts -aspect-ratio to 1:1, 3:2, 2:3 only, and there's
+             no -size / -output-compression passthrough.
 
-  Provider auto-detect order: -provider flag > config.provider >
-  whichever token is available (openai preferred when both are present).
+  Provider auto-detect (when -provider is omitted):
+    1. config.provider in ~/.config/curds/config.toml
+    2. token availability — when both tokens are present, OpenAI is
+       preferred because direct access is faster, cheaper, and exposes
+       more parameters than the Replicate wrapper.
 
 TOKEN RESOLUTION (first non-empty wins)
   1. -token flag

@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,7 +192,28 @@ const (
 	phasePrompt phase = iota
 	phaseGenerating
 	phaseResult
+	phaseSettings
 )
+
+// SettingsValues mirrors the config-file fields the user can edit through
+// the in-TUI settings form.
+type SettingsValues struct {
+	Provider          string
+	OutputDirectory   string
+	OutputFormat      string
+	OutputCompression int
+	OpenAIToken       string
+	ReplicateToken    string
+	Quality           string
+	AspectRatio       string
+	Background        string
+	Moderation        string
+	NumberOfImages    int
+}
+
+// SaveSettingsFn persists the user's edited settings (e.g. by writing to
+// ~/.config/curds/config.toml). Returning an error keeps the form open.
+type SaveSettingsFn func(SettingsValues) error
 
 type model struct {
 	phase    phase
@@ -213,7 +235,31 @@ type model struct {
 	previews   []previewImage
 	previewIdx int
 
+	// Settings form state. settings holds the current persisted view; form
+	// is non-nil only while phase == phaseSettings.
+	settings     SettingsValues
+	saveSettings SaveSettingsFn
+	form         *huh.Form
+	formValues   *settingsFormValues // bound to form fields
+
 	width, height int
+}
+
+// settingsFormValues holds the live values bound to the huh form. Numeric
+// fields are kept as strings because huh.NewInput binds to *string; we
+// parse them back when applying.
+type settingsFormValues struct {
+	Provider          string
+	OutputDirectory   string
+	OutputFormat      string
+	OutputCompression string
+	OpenAIToken       string
+	ReplicateToken    string
+	Quality           string
+	AspectRatio       string
+	Background        string
+	Moderation        string
+	NumberOfImages    string
 }
 
 // previewImage holds a pre-encoded OSC 1337 sequence so the TUI doesn't
@@ -230,7 +276,11 @@ type generateDoneMsg struct{ result GenerateResult }
 // RunInteractive owns the main TUI loop. Call after RunTokenCapture (if
 // needed). gen is invoked when the user submits the prompt; it should
 // build a curds.Request, run it, save outputs, and return paths.
-func RunInteractive(d Defaults, gen GenerateFn) error {
+//
+// settings + save power the in-TUI settings form (ctrl+s). settings
+// supplies the current persisted view; save persists changes and is
+// expected to update any state the caller relies on.
+func RunInteractive(d Defaults, gen GenerateFn, settings SettingsValues, save SaveSettingsFn) error {
 	ta := textarea.New()
 	ta.Placeholder = "What should I generate?"
 	ta.SetWidth(72)
@@ -246,12 +296,14 @@ func RunInteractive(d Defaults, gen GenerateFn) error {
 	vp := viewport.New(72, 8)
 
 	m := model{
-		phase:    phasePrompt,
-		defaults: d,
-		gen:      gen,
-		prompt:   ta,
-		spin:     sp,
-		logs:     vp,
+		phase:        phasePrompt,
+		defaults:     d,
+		gen:          gen,
+		prompt:       ta,
+		spin:         sp,
+		logs:         vp,
+		settings:     settings,
+		saveSettings: save,
 	}
 
 	prog := tea.NewProgram(m, tea.WithAltScreen())
@@ -283,6 +335,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c", "esc":
 				return m, tea.Quit
+			case "ctrl+s":
+				return m.openSettings(), tea.ClearScreen
 			case "enter":
 				if strings.TrimSpace(m.prompt.Value()) == "" {
 					return m, nil
@@ -296,6 +350,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			m.prompt, cmd = m.prompt.Update(msg)
+			return m, cmd
+
+		case phaseSettings:
+			if msg.String() == "ctrl+c" {
+				m.phase = phasePrompt
+				m.form = nil
+				m.formValues = nil
+				return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+			}
+			fm, cmd := m.form.Update(msg)
+			if f, ok := fm.(*huh.Form); ok {
+				m.form = f
+			}
+			switch m.form.State {
+			case huh.StateCompleted:
+				if err := m.applySettings(); err == nil {
+					m.phase = phasePrompt
+					m.form = nil
+					m.formValues = nil
+					return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+				}
+				// On save failure, drop back to prompt anyway — the form
+				// can't render an error region cleanly.
+				m.phase = phasePrompt
+				m.form = nil
+				m.formValues = nil
+				return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+			case huh.StateAborted:
+				m.phase = phasePrompt
+				m.form = nil
+				m.formValues = nil
+				return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+			}
 			return m, cmd
 
 		case phaseGenerating:
@@ -390,9 +477,16 @@ func (m model) View() string {
 		b.WriteString(m.prompt.View())
 		b.WriteString("\n\n")
 		b.WriteString(hintStyle.Render(fmt.Sprintf(
-			"defaults: %s · %s · %s · n=%d   enter submit · ctrl+enter newline · ctrl+c quit",
+			"defaults: %s · %s · %s · n=%d   enter submit · ctrl+enter newline · ctrl+s settings · ctrl+c quit",
 			m.defaults.Provider, m.defaults.AspectRatio, m.defaults.Quality, m.defaults.NumImages,
 		)))
+
+	case phaseSettings:
+		b.WriteString(headingStyle.Render("Settings"))
+		b.WriteString("\n\n")
+		if m.form != nil {
+			b.WriteString(m.form.View())
+		}
 
 	case phaseGenerating:
 		b.WriteString(m.spin.View())
@@ -543,6 +637,189 @@ func (m model) deleteCurrentImage() model {
 		}
 	}
 	return m
+}
+
+// openSettings populates a fresh huh.Form bound to the current settings,
+// switches to phaseSettings, and returns the model so the caller can pair
+// it with a tea.ClearScreen cmd.
+func (m model) openSettings() model {
+	values := &settingsFormValues{
+		Provider:          m.settings.Provider,
+		OutputDirectory:   m.settings.OutputDirectory,
+		OutputFormat:      m.settings.OutputFormat,
+		OutputCompression: fmt.Sprintf("%d", m.settings.OutputCompression),
+		OpenAIToken:       m.settings.OpenAIToken,
+		ReplicateToken:    m.settings.ReplicateToken,
+		Quality:           m.settings.Quality,
+		AspectRatio:       m.settings.AspectRatio,
+		Background:        m.settings.Background,
+		Moderation:        m.settings.Moderation,
+		NumberOfImages:    fmt.Sprintf("%d", m.settings.NumberOfImages),
+	}
+	m.formValues = values
+	m.form = buildSettingsForm(values)
+	if err := m.form.Init(); err != nil {
+		// Init returns a tea.Cmd, not an error — defensive guard only.
+		_ = err
+	}
+	m.phase = phaseSettings
+	return m
+}
+
+// applySettings parses the form values back into SettingsValues, calls the
+// user-provided save callback, and refreshes the TUI's prompt-screen
+// defaults so the change takes effect immediately.
+func (m *model) applySettings() error {
+	if m.formValues == nil {
+		return nil
+	}
+	v := m.formValues
+	out := SettingsValues{
+		Provider:        v.Provider,
+		OutputDirectory: v.OutputDirectory,
+		OutputFormat:    v.OutputFormat,
+		OpenAIToken:     v.OpenAIToken,
+		ReplicateToken:  v.ReplicateToken,
+		Quality:         v.Quality,
+		AspectRatio:     v.AspectRatio,
+		Background:      v.Background,
+		Moderation:      v.Moderation,
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(v.OutputCompression)); err == nil && n >= 0 && n <= 100 {
+		out.OutputCompression = n
+	} else {
+		out.OutputCompression = m.settings.OutputCompression
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(v.NumberOfImages)); err == nil && n >= 1 && n <= 10 {
+		out.NumberOfImages = n
+	} else {
+		out.NumberOfImages = m.settings.NumberOfImages
+	}
+
+	m.settings = out
+	if m.saveSettings != nil {
+		if err := m.saveSettings(out); err != nil {
+			return err
+		}
+	}
+
+	// Refresh prompt-screen defaults so the change is visible immediately.
+	m.defaults.Provider = out.Provider
+	m.defaults.AspectRatio = out.AspectRatio
+	m.defaults.Quality = out.Quality
+	m.defaults.NumImages = out.NumberOfImages
+	m.defaults.OutputFormat = out.OutputFormat
+	return nil
+}
+
+func buildSettingsForm(v *settingsFormValues) *huh.Form {
+	aspectOpts := []huh.Option[string]{
+		huh.NewOption("1:1 square", "1:1"),
+		huh.NewOption("3:2 landscape", "3:2"),
+		huh.NewOption("2:3 portrait", "2:3"),
+		huh.NewOption("4:3 landscape", "4:3"),
+		huh.NewOption("3:4 portrait", "3:4"),
+		huh.NewOption("16:9 ~1080p+ landscape", "16:9"),
+		huh.NewOption("9:16 ~1080p+ portrait", "9:16"),
+		huh.NewOption("21:9 ultrawide", "21:9"),
+		huh.NewOption("9:21 vertical ultra", "9:21"),
+		huh.NewOption("2:1 landscape", "2:1"),
+		huh.NewOption("1:2 portrait", "1:2"),
+		huh.NewOption("16:9-4k landscape", "16:9-4k"),
+		huh.NewOption("9:16-4k portrait", "9:16-4k"),
+	}
+	numImagesOpts := []huh.Option[string]{}
+	for _, n := range []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"} {
+		numImagesOpts = append(numImagesOpts, huh.NewOption(n, n))
+	}
+
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Provider").
+				Description("Which backend curds should call by default.").
+				Options(
+					huh.NewOption("Auto-detect from tokens", ""),
+					huh.NewOption("OpenAI direct (recommended)", "openai"),
+					huh.NewOption("Replicate", "replicate"),
+				).
+				Value(&v.Provider),
+			huh.NewSelect[string]().
+				Title("Aspect ratio").
+				Options(aspectOpts...).
+				Value(&v.AspectRatio),
+			huh.NewSelect[string]().
+				Title("Quality").
+				Options(
+					huh.NewOption("auto (model picks)", "auto"),
+					huh.NewOption("low (fast / cheap)", "low"),
+					huh.NewOption("medium", "medium"),
+					huh.NewOption("high", "high"),
+				).
+				Value(&v.Quality),
+			huh.NewSelect[string]().
+				Title("Number of images").
+				Options(numImagesOpts...).
+				Value(&v.NumberOfImages),
+		).Title("Generation"),
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Output format").
+				Options(
+					huh.NewOption("webp (smallest)", "webp"),
+					huh.NewOption("png (lossless)", "png"),
+					huh.NewOption("jpeg", "jpeg"),
+				).
+				Value(&v.OutputFormat),
+			huh.NewInput().
+				Title("Output directory").
+				Description("Where rendered images land. Tilde is expanded.").
+				Value(&v.OutputDirectory),
+			huh.NewInput().
+				Title("Output compression (0-100)").
+				Description("Applies to webp / jpeg via OpenAI.").
+				Validate(validateInt(0, 100)).
+				Value(&v.OutputCompression),
+			huh.NewSelect[string]().
+				Title("Background").
+				Options(
+					huh.NewOption("auto", "auto"),
+					huh.NewOption("opaque", "opaque"),
+				).
+				Value(&v.Background),
+			huh.NewSelect[string]().
+				Title("Moderation").
+				Options(
+					huh.NewOption("auto (standard)", "auto"),
+					huh.NewOption("low (less restrictive)", "low"),
+				).
+				Value(&v.Moderation),
+		).Title("Output"),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("OpenAI API token").
+				Description("Stored in ~/.config/curds/config.toml. Leave blank to keep using .env / env.").
+				EchoMode(huh.EchoModePassword).
+				Value(&v.OpenAIToken),
+			huh.NewInput().
+				Title("Replicate API token").
+				EchoMode(huh.EchoModePassword).
+				Value(&v.ReplicateToken),
+		).Title("Tokens"),
+	).WithShowHelp(true)
+}
+
+func validateInt(min, max int) func(string) error {
+	return func(s string) error {
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return fmt.Errorf("must be a number")
+		}
+		if n < min || n > max {
+			return fmt.Errorf("must be between %d and %d", min, max)
+		}
+		return nil
+	}
 }
 
 // encodeAllPreviews reads each path from disk and pre-encodes the OSC 1337

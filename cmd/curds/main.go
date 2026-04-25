@@ -287,6 +287,55 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		InlinePreview: shouldShowInline(opts.inline, true) && curds.SupportsInlineImages(),
 	}
 
+	settings := tui.SettingsValues{
+		Provider:          cfg.Provider,
+		OutputDirectory:   cfg.Output.Directory,
+		OutputFormat:      cfg.Output.Format,
+		OutputCompression: cfg.Output.Compression,
+		OpenAIToken:       cfg.Tokens.OpenAI,
+		ReplicateToken:    cfg.Tokens.Replicate,
+		Quality:           cfg.Defaults.Quality,
+		AspectRatio:       cfg.Defaults.AspectRatio,
+		Background:        cfg.Defaults.Background,
+		Moderation:        cfg.Defaults.Moderation,
+		NumberOfImages:    cfg.Defaults.NumberOfImages,
+	}
+
+	saveSettings := func(s tui.SettingsValues) error {
+		cfg.Provider = s.Provider
+		cfg.Output.Directory = s.OutputDirectory
+		cfg.Output.Format = s.OutputFormat
+		cfg.Output.Compression = s.OutputCompression
+		cfg.Tokens.OpenAI = s.OpenAIToken
+		cfg.Tokens.Replicate = s.ReplicateToken
+		cfg.Defaults.Quality = s.Quality
+		cfg.Defaults.AspectRatio = s.AspectRatio
+		cfg.Defaults.Background = s.Background
+		cfg.Defaults.Moderation = s.Moderation
+		cfg.Defaults.NumberOfImages = s.NumberOfImages
+
+		// Mirror the same fields onto the live opts so the *next* generation
+		// (without restarting curds) picks up the new defaults.
+		opts.provider = s.Provider
+		opts.aspectRatio = s.AspectRatio
+		opts.quality = s.Quality
+		opts.numImages = s.NumberOfImages
+		opts.outputFormat = s.OutputFormat
+		opts.outputCompression = s.OutputCompression
+		opts.background = s.Background
+		opts.moderation = s.Moderation
+
+		// Token used by the generate callback comes through req.Token, which
+		// the TUI rebuilds from settings.OpenAIToken / .ReplicateToken on
+		// each call — so updating cfg + opts is enough.
+		if err := cfg.Save(); err != nil {
+			logger.error("config.save_failed", "err", err.Error())
+			return err
+		}
+		logger.info("config.saved", "path", cfg.Path)
+		return nil
+	}
+
 	gen := func(ctx context.Context, req tui.GenerateRequest, logsink io.Writer) tui.GenerateResult {
 		// Apply per-iteration overrides from the form.
 		opts.prompt = req.Prompt
@@ -348,7 +397,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		return tui.GenerateResult{Paths: paths}
 	}
 
-	if err := tui.RunInteractive(defaults, gen); err != nil {
+	if err := tui.RunInteractive(defaults, gen, settings, saveSettings); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
 	return nil

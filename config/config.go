@@ -46,7 +46,7 @@ replicate = ""
 # Default image-gen parameters. Override via CLI flags.
 [defaults]
 quality = "auto"
-aspect_ratio = "16:9"
+aspect_ratio = "1:1"
 background = "auto"
 moderation = "auto"
 number_of_images = 1
@@ -150,7 +150,7 @@ func (c *Config) applyZeroDefaults() {
 		c.Defaults.Quality = "auto"
 	}
 	if c.Defaults.AspectRatio == "" {
-		c.Defaults.AspectRatio = "16:9"
+		c.Defaults.AspectRatio = "1:1"
 	}
 	if c.Defaults.Background == "" {
 		c.Defaults.Background = "auto"
@@ -187,10 +187,10 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".config", "curds", "config.toml"), nil
 }
 
-// SaveTokens writes a token back to the config file. Intended for use after
-// the interactive TUI captures a token from the user. The minimum-viable
-// implementation re-marshals via the toml package.
-func (c *Config) SaveTokens() error {
+// Save writes the entire config back to disk. Used by the interactive
+// settings form and by the one-shot token capture flow. The file is
+// truncated and re-marshalled via the toml encoder.
+func (c *Config) Save() error {
 	if c.Path == "" {
 		return errors.New("config has no source path")
 	}
@@ -202,6 +202,10 @@ func (c *Config) SaveTokens() error {
 	enc := toml.NewEncoder(f)
 	return enc.Encode(c)
 }
+
+// SaveTokens is a deprecated alias kept for backwards compatibility.
+// New code should call Save directly.
+func (c *Config) SaveTokens() error { return c.Save() }
 
 // LoadDotEnv reads a KEY=value file and returns a map of the assignments.
 // Lines starting with # and blank lines are ignored. A leading "export "

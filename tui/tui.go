@@ -324,6 +324,39 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// While in the settings phase, route every message to the embedded
+	// huh.Form. The form needs cursor-blink, init follow-up, and resize
+	// messages — not just key presses — to reach an interactive state.
+	// Without this, the form initialises but never advances on user input.
+	if m.phase == phaseSettings && m.form != nil {
+		if km, ok := msg.(tea.KeyMsg); ok && km.String() == "ctrl+c" {
+			m.phase = phasePrompt
+			m.form = nil
+			m.formValues = nil
+			return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+		}
+		fm, cmd := m.form.Update(msg)
+		if f, ok := fm.(*huh.Form); ok {
+			m.form = f
+		}
+		switch m.form.State {
+		case huh.StateCompleted:
+			if m.formValues != nil && m.formValues.Confirmed {
+				_ = m.applySettings()
+			}
+			m.phase = phasePrompt
+			m.form = nil
+			m.formValues = nil
+			return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+		case huh.StateAborted:
+			m.phase = phasePrompt
+			m.form = nil
+			m.formValues = nil
+			return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+		}
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -332,15 +365,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prompt.SetWidth(w)
 		m.logs.Width = w
 		m.logs.Height = max(6, msg.Height-len(strings.Split(banner, "\n"))-9)
-		// Forward resize events to the settings form so it lays out at
-		// the right width.
-		if m.phase == phaseSettings && m.form != nil {
-			fm, cmd := m.form.Update(msg)
-			if f, ok := fm.(*huh.Form); ok {
-				m.form = f
-			}
-			return m, cmd
-		}
 		return m, nil
 
 	case tea.KeyMsg:

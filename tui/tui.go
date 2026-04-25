@@ -187,10 +187,11 @@ type generateDoneMsg struct{ result GenerateResult }
 // build a curds.Request, run it, save outputs, and return paths.
 func RunInteractive(d Defaults, gen GenerateFn) error {
 	ta := textarea.New()
-	ta.Placeholder = "What should I generate? (ctrl+d to submit)"
+	ta.Placeholder = "What should I generate?"
 	ta.SetWidth(72)
 	ta.SetHeight(6)
 	ta.CharLimit = 8000
+	ta.ShowLineNumbers = false
 	ta.Focus()
 
 	sp := spinner.New()
@@ -237,11 +238,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c", "esc":
 				return m, tea.Quit
-			case "ctrl+d":
+			case "enter":
 				if strings.TrimSpace(m.prompt.Value()) == "" {
 					return m, nil
 				}
 				return m.startGeneration()
+			case "ctrl+j", "ctrl+enter", "alt+enter", "shift+enter":
+				// Insert a literal newline. Different terminals use different
+				// escape sequences for ctrl+enter; we accept all the common ones.
+				m.prompt.InsertString("\n")
+				return m, nil
 			}
 			var cmd tea.Cmd
 			m.prompt, cmd = m.prompt.Update(msg)
@@ -308,7 +314,7 @@ func (m model) View() string {
 		b.WriteString(m.prompt.View())
 		b.WriteString("\n\n")
 		b.WriteString(hintStyle.Render(fmt.Sprintf(
-			"defaults: %s · %s · %s · n=%d   ctrl+d submit · ctrl+c quit",
+			"defaults: %s · %s · %s · n=%d   enter submit · ctrl+enter newline · ctrl+c quit",
 			m.defaults.Provider, m.defaults.AspectRatio, m.defaults.Quality, m.defaults.NumImages,
 		)))
 

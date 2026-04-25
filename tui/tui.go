@@ -495,6 +495,7 @@ func (m model) startGeneration() (tea.Model, tea.Cmd) {
 	logChan := m.logChan
 
 	return m, tea.Batch(
+		m.spin.Tick, // re-arm the spinner ticker for the generating phase
 		runGenerate(ctx, gen, req, logChan),
 		waitForLog(logChan),
 	)

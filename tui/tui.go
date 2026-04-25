@@ -260,6 +260,7 @@ type settingsFormValues struct {
 	Background        string
 	Moderation        string
 	NumberOfImages    string
+	Confirmed         bool // bound to the final "Save?" Confirm field
 }
 
 // previewImage holds a pre-encoded OSC 1337 sequence so the TUI doesn't
@@ -281,6 +282,14 @@ type generateDoneMsg struct{ result GenerateResult }
 // supplies the current persisted view; save persists changes and is
 // expected to update any state the caller relies on.
 func RunInteractive(d Defaults, gen GenerateFn, settings SettingsValues, save SaveSettingsFn) error {
+	m := newModel(d, gen, settings, save)
+	prog := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := prog.Run()
+	return err
+}
+
+// newModel is the constructor shared by RunInteractive and tests.
+func newModel(d Defaults, gen GenerateFn, settings SettingsValues, save SaveSettingsFn) model {
 	ta := textarea.New()
 	ta.Placeholder = "What should I generate?"
 	ta.SetWidth(72)
@@ -295,7 +304,7 @@ func RunInteractive(d Defaults, gen GenerateFn, settings SettingsValues, save Sa
 
 	vp := viewport.New(72, 8)
 
-	m := model{
+	return model{
 		phase:        phasePrompt,
 		defaults:     d,
 		gen:          gen,
@@ -305,10 +314,6 @@ func RunInteractive(d Defaults, gen GenerateFn, settings SettingsValues, save Sa
 		settings:     settings,
 		saveSettings: save,
 	}
-
-	prog := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := prog.Run()
-	return err
 }
 
 func (m model) Init() tea.Cmd {
@@ -375,14 +380,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch m.form.State {
 			case huh.StateCompleted:
-				if err := m.applySettings(); err == nil {
-					m.phase = phasePrompt
-					m.form = nil
-					m.formValues = nil
-					return m, tea.Batch(tea.ClearScreen, textarea.Blink)
+				// Only persist when the user picked "Save" on the final
+				// Confirm field. Discard / form aborted both unwind without
+				// touching the config file.
+				if m.formValues != nil && m.formValues.Confirmed {
+					_ = m.applySettings()
 				}
-				// On save failure, drop back to prompt anyway — the form
-				// can't render an error region cleanly.
 				m.phase = phasePrompt
 				m.form = nil
 				m.formValues = nil
@@ -666,6 +669,9 @@ func (m model) openSettings() (model, tea.Cmd) {
 		Background:        m.settings.Background,
 		Moderation:        m.settings.Moderation,
 		NumberOfImages:    fmt.Sprintf("%d", m.settings.NumberOfImages),
+		// Default the final Save/Discard Confirm to "Save" so a user who
+		// hits enter all the way through ends up persisting their changes.
+		Confirmed: true,
 	}
 	m.formValues = values
 	m.form = buildSettingsForm(values)
@@ -740,6 +746,9 @@ func buildSettingsForm(v *settingsFormValues) *huh.Form {
 		numImagesOpts = append(numImagesOpts, huh.NewOption(n, n))
 	}
 
+	// Single-group form so tab walks the whole list and enter on the last
+	// field submits. Multi-group forms confused some users because tabbing
+	// past the last field doesn't visibly advance to the next group.
 	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -768,8 +777,6 @@ func buildSettingsForm(v *settingsFormValues) *huh.Form {
 				Title("Number of images").
 				Options(numImagesOpts...).
 				Value(&v.NumberOfImages),
-		).Title("Generation"),
-		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Output format").
 				Options(
@@ -801,8 +808,6 @@ func buildSettingsForm(v *settingsFormValues) *huh.Form {
 					huh.NewOption("low (less restrictive)", "low"),
 				).
 				Value(&v.Moderation),
-		).Title("Output"),
-		huh.NewGroup(
 			huh.NewInput().
 				Title("OpenAI API token").
 				Description("Stored in ~/.config/curds/config.toml. Leave blank to keep using .env / env.").
@@ -812,7 +817,13 @@ func buildSettingsForm(v *settingsFormValues) *huh.Form {
 				Title("Replicate API token").
 				EchoMode(huh.EchoModePassword).
 				Value(&v.ReplicateToken),
-		).Title("Tokens"),
+			huh.NewConfirm().
+				Title("Save settings?").
+				Description("Writes to ~/.config/curds/config.toml and applies immediately.").
+				Affirmative("Save").
+				Negative("Discard").
+				Value(&v.Confirmed),
+		),
 	).WithShowHelp(true)
 }
 

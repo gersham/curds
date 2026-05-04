@@ -62,6 +62,14 @@ type cliOptions struct {
 	replicateBYOKey   string
 	inputImages       imageList
 	mask              string
+	lastFrameImage    string
+	referenceImages   imageList
+	referenceVideos   imageList
+	referenceAudios   imageList
+	videoDuration     int
+	videoResolution   string
+	noAudio           bool
+	seed              int
 	pollInterval      time.Duration
 	timeout           time.Duration
 	verbose           bool
@@ -152,6 +160,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	}
 
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
+	applyModelOutputDefaults(opts, cfg, resolvedModel)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -173,18 +182,19 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if err != nil {
 		return err
 	}
-	if res == nil || len(res.Images) == 0 {
-		return errors.New("no images returned")
+	if res == nil || (len(res.Images) == 0 && len(res.Videos) == 0) {
+		return errors.New("no assets returned")
 	}
 
-	paths, err := saveImages(opts, res.Images)
+	paths, err := saveResult(opts, res)
 	if err != nil {
 		return fmt.Errorf("save: %w", err)
 	}
 
 	logger.info("curds.completed",
 		"images", len(res.Images),
-		"total_bytes", totalBytes(res.Images),
+		"videos", len(res.Videos),
+		"total_bytes", totalResultBytes(res),
 		"duration_ms", time.Since(start).Milliseconds(),
 		"paths", strings.Join(paths, ","),
 	)
@@ -275,6 +285,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 
 	opts.provider = provider
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
+	applyModelOutputDefaults(opts, cfg, resolvedModel)
 
 	defaults := tui.Defaults{
 		Provider:      opts.provider,
@@ -368,10 +379,10 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		if err != nil {
 			return tui.GenerateResult{Err: err}
 		}
-		if res == nil || len(res.Images) == 0 {
-			return tui.GenerateResult{Err: errors.New("no images returned")}
+		if res == nil || (len(res.Images) == 0 && len(res.Videos) == 0) {
+			return tui.GenerateResult{Err: errors.New("no assets returned")}
 		}
-		paths, err := saveImages(opts, res.Images)
+		paths, err := saveResult(opts, res)
 		if err != nil {
 			return tui.GenerateResult{Err: err}
 		}
@@ -379,7 +390,8 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 			"info", "curds.completed",
 			[]any{
 				"images", len(res.Images),
-				"total_bytes", totalBytes(res.Images),
+				"videos", len(res.Videos),
+				"total_bytes", totalResultBytes(res),
 				"duration_ms", time.Since(start).Milliseconds(),
 				"paths", strings.Join(paths, ","),
 			},
@@ -404,6 +416,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 }
 
 func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *curds.Request {
+	audio := !opts.noAudio
 	return &curds.Request{
 		Provider:          opts.provider,
 		Token:             token,
@@ -421,6 +434,14 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		ReplicateBYOKey:   opts.replicateBYOKey,
 		InputImages:       []string(opts.inputImages),
 		Mask:              opts.mask,
+		LastFrameImage:    opts.lastFrameImage,
+		ReferenceImages:   []string(opts.referenceImages),
+		ReferenceVideos:   []string(opts.referenceVideos),
+		ReferenceAudios:   []string(opts.referenceAudios),
+		VideoDuration:     opts.videoDuration,
+		VideoResolution:   opts.videoResolution,
+		GenerateAudio:     &audio,
+		Seed:              opts.seed,
 		PollInterval:      opts.pollInterval,
 		Logger:            logger,
 		Verbose:           opts.verbose,
@@ -435,7 +456,22 @@ func totalBytes(images []curds.Image) int {
 	return t
 }
 
-// openInViewer launches the generated images in the OS image viewer.
+func totalVideoBytes(videos []curds.Video) int {
+	t := 0
+	for _, video := range videos {
+		t += len(video.Bytes)
+	}
+	return t
+}
+
+func totalResultBytes(res *curds.Result) int {
+	if res == nil {
+		return 0
+	}
+	return totalBytes(res.Images) + totalVideoBytes(res.Videos)
+}
+
+// openInViewer launches the generated assets in the OS viewer.
 // macOS uses `open -a Preview`, Linux uses `xdg-open`, Windows uses `start`.
 // On unsupported platforms it returns an error rather than silently no-oping.
 func openInViewer(paths []string) error {
@@ -491,7 +527,7 @@ func parseFlags() (*cliOptions, error) {
 	flag.StringVar(&opts.size, "size", "", "Explicit pixel size for openai (e.g. 2048x1152)")
 	flag.StringVar(&opts.quality, "quality", "", "Quality: low, medium, high, auto")
 	flag.IntVar(&opts.numImages, "number-of-images", 0, "Number of images (1-10)")
-	flag.StringVar(&opts.outputFormat, "output-format", "", "Output format: webp, png, jpeg")
+	flag.StringVar(&opts.outputFormat, "output-format", "", "Output format: webp, png, jpeg, mp4")
 	flag.IntVar(&opts.outputCompression, "output-compression", -1, "Output compression 0-100 (openai webp/jpeg)")
 	flag.StringVar(&opts.background, "background", "", "Background: auto, opaque")
 	flag.StringVar(&opts.moderation, "moderation", "", "Moderation: auto, low")
@@ -500,12 +536,20 @@ func parseFlags() (*cliOptions, error) {
 
 	flag.Var(&opts.inputImages, "input-image", fmt.Sprintf("Input reference image(s); repeat or comma-separate, up to %d", curds.MaxInputImages))
 	flag.StringVar(&opts.mask, "mask", "", "Mask image file (openai edits only)")
+	flag.StringVar(&opts.lastFrameImage, "last-frame-image", "", "Video last-frame image (Seedance; requires one -input-image first frame)")
+	flag.Var(&opts.referenceImages, "reference-image", "Seedance reference image(s); repeat or comma-separate, up to 9")
+	flag.Var(&opts.referenceVideos, "reference-video", "Seedance reference video(s); repeat or comma-separate, up to 3")
+	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate, up to 3")
+	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Seedance video duration in seconds: -1 or 4-15 (default: 5)")
+	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Seedance video resolution: 480p, 720p, 1080p (default: 720p)")
+	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
+	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
 
 	flag.DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Polling interval for replicate")
 	flag.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Overall timeout (0 disables)")
 	flag.BoolVar(&opts.verbose, "verbose", false, "Verbose debug logs to stderr")
 	flag.BoolVar(&opts.noTUI, "no-tui", false, "Never enter interactive TUI; fail with an error instead")
-	flag.BoolVar(&opts.open, "open", false, "Open generated images in the OS default viewer (macOS: Preview)")
+	flag.BoolVar(&opts.open, "open", false, "Open generated assets in the OS default viewer (macOS: Preview)")
 	flag.StringVar(&opts.inline, "inline", "auto", "Show generated images inline in the terminal: auto|on|off (auto = on in TUI, off otherwise)")
 
 	setupUsage()
@@ -530,7 +574,7 @@ func setupUsage() {
 // humans (man-page conventions, no Markdown noise on stdout).
 func helpText() string {
 	return `NAME
-  curds — generate images from text prompts via OpenAI or Replicate
+  curds — generate images and videos from text prompts via OpenAI or Replicate
 
 SYNOPSIS
   curds [flags]
@@ -538,7 +582,8 @@ SYNOPSIS
   echo PROMPT | curds [flags]
 
 DESCRIPTION
-  Generates images using gpt-image-2 (default). Saves to
+  Generates images using gpt-image-2 (default), or videos with Seedance 2.0
+  on Replicate. Saves to
   ~/Desktop/curds/<unix_milli>.<format> unless -o is given. Auto-creates
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
   when prompt or token is missing (suppress with -no-tui).
@@ -556,7 +601,7 @@ PROVIDERS
              Endpoint:  POST /v1/models/<owner>/<name>/predictions
              Default model: openai/gpt-image-2
              Use when: you don't have direct OpenAI access yet, or you
-             want to run a non-OpenAI image model hosted on Replicate.
+             want to run a non-OpenAI image or video model hosted on Replicate.
              Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
              restricts -aspect-ratio to 1:1, 3:2, 2:3 only, and there's
              no -size / -output-compression passthrough.
@@ -587,7 +632,7 @@ FLAGS
                                 default: ~/Desktop/curds/<unix_milli>.<format>
                                 extension drives -output-format unless set
     -no-tui                     never enter interactive TUI; fail instead
-    -open                       open generated images in OS image viewer
+    -open                       open generated assets in OS viewer
                                 (macOS: Preview, linux: xdg-open, win: start)
     -inline   {auto|on|off}     show images inline in the terminal
                                 (auto = on in TUI mode if supported, off
@@ -606,12 +651,12 @@ FLAGS
                                       Replicate (replicate only)
 
   Image parameters
-    -aspect-ratio       RATIO              see ASPECT RATIOS (default: 16:9)
+    -aspect-ratio       RATIO              see ASPECT RATIOS (default: 1:1)
     -size               WxH                explicit pixel size (openai)
                                            rounded to gpt-image-2 constraints
     -quality            {low|medium|high|auto}     default: auto
     -number-of-images   N                  1-10 (default: 1)
-    -output-format      {webp|png|jpeg}    default: webp
+    -output-format      {webp|png|jpeg|mp4} default: webp, or mp4 for video
     -output-compression 0-100              openai webp/jpeg (default: 90)
     -background         {auto|opaque}      default: auto
                                            (transparent unsupported by
@@ -628,6 +673,16 @@ FLAGS
 
   Replicate-specific
     -poll-interval DURATION     status poll cadence (default: 2s)
+    -video-duration N           Seedance duration: -1 or 4-15 seconds
+                                (default: 5)
+    -video-resolution VALUE      Seedance resolution: 480p, 720p, 1080p
+                                (default: 720p)
+    -no-audio                    disable Seedance synchronized audio
+    -seed N                      random seed for supported Replicate models
+    -last-frame-image PATH       Seedance last frame; requires -input-image
+    -reference-image PATH        Seedance reference image(s), up to 9
+    -reference-video PATH        Seedance reference video(s), up to 3
+    -reference-audio PATH        Seedance reference audio(s), up to 3
 
 ASPECT RATIOS
   Replicate gpt-image-2 accepts only:  1:1, 3:2, 2:3
@@ -644,7 +699,7 @@ ASPECT RATIOS
     2:3        1024x1536
     4:3        1536x1152
     3:4        1152x1536
-    16:9       2048x1152    ~1080p+ landscape (default)
+    16:9       2048x1152    ~1080p+ landscape
     9:16       1152x2048    ~1080p+ portrait
     21:9       2688x1152
     9:21       1152x2688
@@ -671,7 +726,7 @@ CONFIG FILE
            Auto-written on first run; tokens added by the TUI when you say so.
 
 EXAMPLES
-  # Simplest — uses 16:9 default + auto-detected provider
+  # Simplest — uses the configured aspect ratio + auto-detected provider
   curds -prompt "a watercolor fox in a meadow"
 
   # Pipe a long prompt from a file
@@ -697,6 +752,11 @@ EXAMPLES
 
   # Generate and open in Preview (macOS)
   curds -open -prompt "a watercolor fox in a meadow"
+
+  # Generate a Seedance 2.0 video via Replicate
+  curds -provider replicate -model seedance-2 \
+        -prompt "a cinematic 5 second shot of a glass sculpture forming" \
+        -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
 
 FILES
   ~/.config/curds/config.toml    config (auto-created)
@@ -745,11 +805,25 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 	if opts.outputPath != "" && !flagWasSet("output-format") {
 		if ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(opts.outputPath), ".")); ext != "" {
 			switch ext {
-			case "webp", "png":
+			case "webp", "png", "mp4":
 				opts.outputFormat = ext
 			case "jpeg", "jpg":
 				opts.outputFormat = "jpeg"
 			}
+		}
+	}
+}
+
+func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string) {
+	if !curds.IsVideoModel(model) {
+		return
+	}
+	if !flagWasSet("output-format") {
+		opts.outputFormat = "mp4"
+	}
+	if !flagWasSet("output") {
+		if path, err := ensureDefaultOutputPath(cfg, opts.outputFormat); err == nil {
+			opts.outputPath = path
 		}
 	}
 }
@@ -764,6 +838,16 @@ func ensureDefaultOutputPath(cfg *config.Config, format string) (string, error) 
 	}
 	name := fmt.Sprintf("%d.%s", time.Now().UnixMilli(), format)
 	return filepath.Join(dir, name), nil
+}
+
+func saveResult(opts *cliOptions, res *curds.Result) ([]string, error) {
+	if res == nil {
+		return nil, nil
+	}
+	if len(res.Videos) > 0 {
+		return saveVideos(opts, res.Videos)
+	}
+	return saveImages(opts, res.Images)
 }
 
 func saveImages(opts *cliOptions, images []curds.Image) ([]string, error) {
@@ -799,6 +883,39 @@ func saveImages(opts *cliOptions, images []curds.Image) ([]string, error) {
 				[]any{"index", i, "prompt", img.RevisedPrompt},
 				curds.IsTerminalWriter(os.Stderr),
 			))
+		}
+		fmt.Println(path)
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+func saveVideos(opts *cliOptions, videos []curds.Video) ([]string, error) {
+	origExt := filepath.Ext(opts.outputPath)
+	stem := strings.TrimSuffix(opts.outputPath, origExt)
+	ext := origExt
+	if ext == "" {
+		ext = ".mp4"
+	}
+
+	paths := make([]string, 0, len(videos))
+	for i, video := range videos {
+		var path string
+		switch {
+		case len(videos) > 1:
+			path = fmt.Sprintf("%s-%d%s", stem, i+1, ext)
+		case origExt == "":
+			path = stem + ext
+		default:
+			path = opts.outputPath
+		}
+		if dir := filepath.Dir(path); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, err
+			}
+		}
+		if err := os.WriteFile(path, video.Bytes, 0o644); err != nil {
+			return nil, fmt.Errorf("write %s: %w", path, err)
 		}
 		fmt.Println(path)
 		paths = append(paths, path)

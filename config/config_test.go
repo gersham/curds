@@ -33,6 +33,9 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.Models["gpt-image-2"].ReplicateName != "openai/gpt-image-2" {
 		t.Errorf("replicate name: %q", cfg.Models["gpt-image-2"].ReplicateName)
 	}
+	if cfg.Models["seedance-2"].ReplicateName != "bytedance/seedance-2.0" {
+		t.Errorf("seedance replicate name: %q", cfg.Models["seedance-2"].ReplicateName)
+	}
 
 	// Second call should NOT recreate.
 	_, created2, err := LoadOrCreateAt(path)
@@ -150,6 +153,7 @@ func TestResolveModel(t *testing.T) {
 		DefaultModel: "gpt-image-2",
 		Models: map[string]ModelConfig{
 			"gpt-image-2": {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
+			"seedance-2":  {ReplicateName: "bytedance/seedance-2.0"},
 		},
 	}
 	if got := ResolveModel(cfg, "", "openai"); got != "gpt-image-2" {
@@ -161,6 +165,9 @@ func TestResolveModel(t *testing.T) {
 	// Unknown key: passes through.
 	if got := ResolveModel(cfg, "owner/custom-model:abc", "replicate"); got != "owner/custom-model:abc" {
 		t.Errorf("passthrough: %q", got)
+	}
+	if got := ResolveModel(cfg, "seedance-2", "replicate"); got != "bytedance/seedance-2.0" {
+		t.Errorf("seedance: %q", got)
 	}
 }
 
@@ -177,6 +184,9 @@ func TestDefaultTOMLParses(t *testing.T) {
 	// Sanity-check that the embedded TOML survives a round-trip.
 	if !strings.Contains(DefaultTOML, "[models.gpt-image-2]") {
 		t.Errorf("default TOML missing models section")
+	}
+	if !strings.Contains(DefaultTOML, "[models.seedance-2]") {
+		t.Errorf("default TOML missing seedance model")
 	}
 	if cfg.Output.Directory == "" {
 		t.Errorf("output directory missing after parse")

@@ -40,9 +40,9 @@ func TestAutoDetectProvider(t *testing.T) {
 
 func TestResolveSize(t *testing.T) {
 	cases := []struct {
-		name  string
-		req   Request
-		want  string
+		name string
+		req  Request
+		want string
 	}{
 		{"explicit size wins", Request{Size: "1920x1088", AspectRatio: "1:1"}, "1920x1088"},
 		{"16:9 maps to ~1080p+", Request{AspectRatio: "16:9"}, "2048x1152"},
@@ -69,8 +69,8 @@ func TestRequestValidate(t *testing.T) {
 	}
 
 	cases := []struct {
-		name  string
-		mut   func(r *Request)
+		name       string
+		mut        func(r *Request)
 		wantErrSub string
 	}{
 		{"valid", func(r *Request) {}, ""},
@@ -92,6 +92,41 @@ func TestRequestValidate(t *testing.T) {
 			r.Provider = ProviderReplicate
 			r.AspectRatio = "3:2"
 		}, ""},
+		{"seedance accepts video aspect ratio", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "bytedance/seedance-2.0"
+			r.AspectRatio = "16:9"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 5
+			r.VideoResolution = "720p"
+		}, ""},
+		{"seedance rejects bad duration", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "bytedance/seedance-2.0"
+			r.AspectRatio = "16:9"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 3
+			r.VideoResolution = "720p"
+		}, "video_duration"},
+		{"seedance accepts multiple input images as references", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "bytedance/seedance-2.0"
+			r.AspectRatio = "16:9"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 5
+			r.VideoResolution = "720p"
+			r.InputImages = []string{"https://example.com/1.png", "https://example.com/2.png"}
+		}, ""},
+		{"seedance last frame requires exactly one input image", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "bytedance/seedance-2.0"
+			r.AspectRatio = "16:9"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 5
+			r.VideoResolution = "720p"
+			r.InputImages = []string{"https://example.com/1.png", "https://example.com/2.png"}
+			r.LastFrameImage = "https://example.com/end.png"
+		}, "exactly one"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -455,6 +490,149 @@ func TestReplicateProviderPolls(t *testing.T) {
 	}
 }
 
+func TestReplicateProviderSeedanceVideoHappyPath(t *testing.T) {
+	videoBody := []byte("rendered-mp4-bytes")
+
+	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(videoBody)
+	}))
+	defer videoServer.Close()
+
+	audio := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/models/bytedance/seedance-2.0/predictions") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		input, _ := b["input"].(map[string]any)
+		if input["prompt"] != "a glass sculpture forming" {
+			t.Errorf("prompt: %v", input["prompt"])
+		}
+		if input["duration"] != float64(5) {
+			t.Errorf("duration: %v", input["duration"])
+		}
+		if input["resolution"] != "720p" {
+			t.Errorf("resolution: %v", input["resolution"])
+		}
+		if input["aspect_ratio"] != "16:9" {
+			t.Errorf("aspect_ratio: %v", input["aspect_ratio"])
+		}
+		if input["generate_audio"] != false {
+			t.Errorf("generate_audio: %v", input["generate_audio"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "vid1",
+			"status": "succeeded",
+			"output": videoServer.URL + "/out.mp4",
+			"urls":   map[string]string{"get": ""},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           "bytedance/seedance-2.0",
+		Prompt:          "a glass sculpture forming",
+		AspectRatio:     "16:9",
+		OutputFormat:    "mp4",
+		VideoDuration:   5,
+		VideoResolution: "720p",
+		GenerateAudio:   &audio,
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("want 1 video, got %d", len(res.Videos))
+	}
+	if string(res.Videos[0].Bytes) != string(videoBody) {
+		t.Fatalf("video bytes mismatch")
+	}
+}
+
+func TestReplicateProviderSeedanceInputImages(t *testing.T) {
+	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("video"))
+	}))
+	defer videoServer.Close()
+
+	cases := []struct {
+		name             string
+		inputImages      []string
+		wantImage        string
+		wantReferenceLen int
+	}{
+		{
+			name:        "single input image is first frame",
+			inputImages: []string{"https://example.com/first.png"},
+			wantImage:   "https://example.com/first.png",
+		},
+		{
+			name:             "multiple input images are references",
+			inputImages:      []string{"https://example.com/one.png", "https://example.com/two.png"},
+			wantReferenceLen: 2,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var b map[string]any
+				_ = json.Unmarshal(body, &b)
+				input, _ := b["input"].(map[string]any)
+				if got, _ := input["image"].(string); got != tc.wantImage {
+					t.Errorf("image: %q", got)
+				}
+				refs, _ := input["reference_images"].([]any)
+				if len(refs) != tc.wantReferenceLen {
+					t.Errorf("reference_images len: %d", len(refs))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":     "vid-input",
+					"status": "succeeded",
+					"output": videoServer.URL + "/out.mp4",
+				})
+			}))
+			defer srv.Close()
+
+			c := &Client{
+				HTTPClient: srv.Client(),
+				Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+			}
+			_, err := c.Generate(context.Background(), &Request{
+				Provider:        ProviderReplicate,
+				Token:           "rtok",
+				Model:           "bytedance/seedance-2.0",
+				Prompt:          "animate the image",
+				AspectRatio:     "16:9",
+				OutputFormat:    "mp4",
+				VideoDuration:   5,
+				VideoResolution: "720p",
+				InputImages:     tc.inputImages,
+				PollInterval:    10 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+		})
+	}
+}
+
 func TestReplicateProviderFailedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -709,14 +887,14 @@ func TestSupportsInlineImages(t *testing.T) {
 	}
 }
 
-func TestEncodeInputImagesAsDataURLs(t *testing.T) {
+func TestEncodeMediaAsDataURLs(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "x.png")
 	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := encodeInputImagesAsDataURLs([]string{
+	out, err := encodeMediaAsDataURLs([]string{
 		p,
 		"https://example.com/y.jpg",
 		"data:image/png;base64,xxx",

@@ -17,7 +17,7 @@ import (
 )
 
 // DefaultTOML is the literal content written when no config file exists.
-const DefaultTOML = `# Curds image-generation config.
+const DefaultTOML = `# Curds image/video-generation config.
 #
 # Resolution priority:
 #   API tokens:   config (this file) > .env in cwd > process env vars
@@ -56,6 +56,9 @@ number_of_images = 1
 [models.gpt-image-2]
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
+
+[models.seedance-2]
+replicate_name = "bytedance/seedance-2.0"
 `
 
 // Config is the parsed config file.
@@ -168,6 +171,11 @@ func (c *Config) applyZeroDefaults() {
 		c.Models["gpt-image-2"] = ModelConfig{
 			OpenAIName:    "gpt-image-2",
 			ReplicateName: "openai/gpt-image-2",
+		}
+	}
+	if _, ok := c.Models["seedance-2"]; !ok {
+		c.Models["seedance-2"] = ModelConfig{
+			ReplicateName: "bytedance/seedance-2.0",
 		}
 	}
 }

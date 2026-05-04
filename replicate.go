@@ -52,25 +52,10 @@ func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result
 		"aspect_ratio", req.AspectRatio,
 	)
 
-	input := map[string]any{
-		"prompt":           req.Prompt,
-		"aspect_ratio":     req.AspectRatio,
-		"quality":          req.Quality,
-		"number_of_images": req.NumImages,
-		"output_format":    req.OutputFormat,
-		"background":       req.Background,
-		"moderation":       req.Moderation,
-	}
-	if req.ReplicateBYOKey != "" {
-		input["openai_api_key"] = req.ReplicateBYOKey
-	}
-	if len(req.InputImages) > 0 {
-		urls, err := encodeInputImagesAsDataURLs(req.InputImages)
-		if err != nil {
-			logError(req, "replicate.input_image_failed", "err", err.Error())
-			return nil, fmt.Errorf("prepare input images: %w", err)
-		}
-		input["input_images"] = urls
+	input, err := buildReplicateInput(req)
+	if err != nil {
+		logError(req, "replicate.input_media_failed", "err", err.Error())
+		return nil, err
 	}
 
 	pred, err := p.createPrediction(ctx, req, input)
@@ -95,8 +80,106 @@ func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result
 	if len(urls) == 0 {
 		return nil, errors.New("prediction succeeded but produced no output URLs")
 	}
-	logInfo(req, "replicate.succeeded", "id", pred.ID, "image_count", len(urls))
+	if IsVideoModel(req.Model) {
+		return p.downloadVideos(ctx, req, pred.ID, urls)
+	}
+	return p.downloadImages(ctx, req, pred.ID, urls)
+}
 
+func buildReplicateInput(req *Request) (map[string]any, error) {
+	if IsVideoModel(req.Model) {
+		return buildReplicateVideoInput(req)
+	}
+	input := map[string]any{
+		"prompt":           req.Prompt,
+		"aspect_ratio":     req.AspectRatio,
+		"quality":          req.Quality,
+		"number_of_images": req.NumImages,
+		"output_format":    req.OutputFormat,
+		"background":       req.Background,
+		"moderation":       req.Moderation,
+	}
+	if req.ReplicateBYOKey != "" {
+		input["openai_api_key"] = req.ReplicateBYOKey
+	}
+	if len(req.InputImages) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare input images: %w", err)
+		}
+		input["input_images"] = urls
+	}
+	return input, nil
+}
+
+func buildReplicateVideoInput(req *Request) (map[string]any, error) {
+	input := map[string]any{
+		"prompt":         req.Prompt,
+		"duration":       req.VideoDuration,
+		"resolution":     req.VideoResolution,
+		"aspect_ratio":   req.AspectRatio,
+		"generate_audio": true,
+	}
+	if req.VideoDuration == 0 {
+		input["duration"] = 5
+	}
+	if req.GenerateAudio != nil {
+		input["generate_audio"] = *req.GenerateAudio
+	}
+	if req.Seed != 0 {
+		input["seed"] = req.Seed
+	}
+	switch {
+	case len(req.InputImages) == 1:
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare first frame image: %w", err)
+		}
+		input["image"] = urls[0]
+	case len(req.InputImages) > 1:
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference images: %w", err)
+		}
+		input["reference_images"] = urls
+	}
+	if req.LastFrameImage != "" {
+		urls, err := encodeMediaAsDataURLs([]string{req.LastFrameImage})
+		if err != nil {
+			return nil, fmt.Errorf("prepare last frame image: %w", err)
+		}
+		input["last_frame_image"] = urls[0]
+	}
+	if len(req.ReferenceImages) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.ReferenceImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference images: %w", err)
+		}
+		if existing, ok := input["reference_images"].([]string); ok {
+			input["reference_images"] = append(existing, urls...)
+		} else {
+			input["reference_images"] = urls
+		}
+	}
+	if len(req.ReferenceVideos) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.ReferenceVideos)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference videos: %w", err)
+		}
+		input["reference_videos"] = urls
+	}
+	if len(req.ReferenceAudios) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.ReferenceAudios)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference audios: %w", err)
+		}
+		input["reference_audios"] = urls
+	}
+	return input, nil
+}
+
+func (p *ReplicateProvider) downloadImages(ctx context.Context, req *Request, id string, urls []string) (*Result, error) {
+	logInfo(req, "replicate.succeeded", "id", id, "image_count", len(urls))
 	res := &Result{Images: make([]Image, 0, len(urls))}
 	for i, u := range urls {
 		b, err := p.downloadBytes(ctx, req.Token, u)
@@ -106,6 +189,21 @@ func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result
 		}
 		logInfo(req, "image.downloaded", "index", i, "bytes", len(b), "format", req.OutputFormat)
 		res.Images = append(res.Images, Image{Bytes: b, Format: req.OutputFormat})
+	}
+	return res, nil
+}
+
+func (p *ReplicateProvider) downloadVideos(ctx context.Context, req *Request, id string, urls []string) (*Result, error) {
+	logInfo(req, "replicate.succeeded", "id", id, "video_count", len(urls))
+	res := &Result{Videos: make([]Video, 0, len(urls))}
+	for i, u := range urls {
+		b, err := p.downloadBytes(ctx, req.Token, u)
+		if err != nil {
+			logError(req, "video.download_failed", "index", i, "url", u, "err", err.Error())
+			return nil, fmt.Errorf("download %s: %w", u, err)
+		}
+		logInfo(req, "video.downloaded", "index", i, "bytes", len(b), "format", req.OutputFormat)
+		res.Videos = append(res.Videos, Video{Bytes: b, Format: req.OutputFormat, URL: u})
 	}
 	return res, nil
 }
@@ -296,7 +394,7 @@ func extractOutputURLs(raw json.RawMessage) ([]string, error) {
 	return nil, fmt.Errorf("unsupported output shape: %s", string(raw))
 }
 
-func encodeInputImagesAsDataURLs(paths []string) ([]string, error) {
+func encodeMediaAsDataURLs(paths []string) ([]string, error) {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") || strings.HasPrefix(p, "data:") {

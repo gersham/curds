@@ -4,8 +4,9 @@
 
 ![curds in action](docs/curds-preview.png)
 
-Generate images from the command line via OpenAI's gpt-image-2 (direct) or
-Replicate-hosted models. Logs upstream progress in colorized
+Generate images from the command line via OpenAI's gpt-image-2 (direct), or
+images/videos via Replicate-hosted models such as Seedance 2.0. Logs
+upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
 banner, multiline prompt, spinner, scrolling log panel, and a "generate
@@ -28,7 +29,7 @@ another?" loop after each render.
   - [Replicate](https://replicate.com/account/api-tokens) — alternative
     backend, no verification dance.
 - Network access to `api.openai.com` and/or `api.replicate.com`
-  (and `replicate.delivery` for downloading rendered images).
+  (and `replicate.delivery` for downloading rendered assets).
 
 ## Install
 
@@ -50,7 +51,7 @@ curds -prompt "a watercolor fox in a meadow"
 
 Or with no flags at all to land in the TUI. On first run curds writes a
 default config to `~/.config/curds/config.toml` and saves output to
-`~/Desktop/curds/<unix_milli>.webp`.
+`~/Desktop/curds/<unix_milli>.webp` for images, or `.mp4` for video models.
 
 ## Interactive mode (TUI)
 
@@ -86,7 +87,7 @@ or by setting `provider = "openai"` in the config file.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
-| openai    | `gpt-image-2`         | `/v1/images/generations` (or `/v1/images/edits` with `-i`)   |
+| openai    | `gpt-image-2`         | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
 | replicate | `openai/gpt-image-2`  | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
 
 ## Editing / composing with reference images
@@ -105,6 +106,32 @@ curds -input-image lounge.png -mask mask.png \
       -prompt "indoor lounge with flamingo in pool"
 ```
 
+## Video generation
+
+Seedance 2.0 is available through Replicate as the `seedance-2` model key
+(`bytedance/seedance-2.0`). Video output is saved as MP4, and `-output`
+extension still wins when supplied.
+
+```bash
+curds -provider replicate -model seedance-2 \
+      -prompt "a cinematic 5 second shot of a glass sculpture forming" \
+      -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
+```
+
+Seedance-specific flags:
+
+- `-video-duration` — `-1` for intelligent duration, or `4` through `15`
+  seconds. Default: `5`.
+- `-video-resolution` — `480p`, `720p`, or `1080p`. Default: `720p`.
+- `-no-audio` — disables synchronized generated audio.
+- `-seed` — optional deterministic seed.
+- `-input-image` — one image becomes the first frame for image-to-video;
+  multiple images are sent as Seedance `reference_images`.
+- `-last-frame-image` — optional ending frame; requires `-input-image`.
+- `-reference-image`, `-reference-video`, `-reference-audio` — multimodal
+  references. In prompts, refer to them as `[Image1]`, `[Video1]`,
+  `[Audio1]`, etc.
+
 ## Aspect ratios
 
 `-aspect-ratio` accepts these named ratios (mapped to multiples-of-16
@@ -115,13 +142,15 @@ sizes for gpt-image-2):
 | 1:1         | 1024×1024    |                                |
 | 3:2 / 2:3   | 1536×1024 / 1024×1536 |                       |
 | 4:3 / 3:4   | 1536×1152 / 1152×1536 |                       |
-| **16:9**    | **2048×1152** | default; ~1080p+ landscape    |
+| 16:9        | 2048×1152     | ~1080p+ landscape              |
 | 9:16        | 1152×2048    | ~1080p+ portrait               |
 | 21:9 / 9:21 | 2688×1152 / 1152×2688 | ultrawide              |
 | 2:1 / 1:2   | 2048×1024 / 1024×2048 |                       |
 | 16:9-4k / 9:16-4k | 3840×2160 / 2160×3840 |                |
 
 Replicate's gpt-image-2 wrapper accepts only `1:1`, `3:2`, `2:3`.
+Seedance 2.0 accepts `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`,
+`9:21`, and `adaptive`.
 
 For something custom, pass `-size WxH`. Anything not on a 16-pixel
 boundary is rounded to the nearest valid value (true 1080p `1920×1080`
@@ -146,7 +175,7 @@ replicate = ""
 
 [defaults]
 quality = "auto"
-aspect_ratio = "16:9"
+aspect_ratio = "1:1"
 background = "auto"
 moderation = "auto"
 number_of_images = 1
@@ -154,6 +183,9 @@ number_of_images = 1
 [models.gpt-image-2]
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
+
+[models.seedance-2]
+replicate_name = "bytedance/seedance-2.0"
 ```
 
 Override the path with `$CURDS_CONFIG`.
@@ -190,8 +222,10 @@ Run `curds -h` for the full list. Highlights:
 - `-quality` / `-output-format` / `-output-compression`
 - `-input-image` — reference image(s), repeatable or comma-separated
 - `-mask` — mask file for OpenAI edits
+- `-video-duration` / `-video-resolution` / `-no-audio` — Seedance video controls
+- `-reference-image` / `-reference-video` / `-reference-audio` — Seedance references
 - `-provider`, `-token`, `-model`
-- `-open` — open generated images in OS viewer (macOS Preview)
+- `-open` — open generated assets in OS viewer (macOS Preview)
 - `-verbose` — debug-level logs
 - `-no-tui` — never enter interactive mode (fail instead)
 

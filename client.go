@@ -1,4 +1,4 @@
-// Package curds generates images via image-generation providers.
+// Package curds generates images and videos via generation providers.
 //
 // Supported providers:
 //   - openai    (direct OpenAI Image API; default model gpt-image-2)
@@ -59,7 +59,7 @@ var ReplicateAllowedAspectRatios = map[string]bool{
 	"1:1": true, "3:2": true, "2:3": true,
 }
 
-// Request describes a single image-generation call.
+// Request describes a single generation call.
 type Request struct {
 	Provider          string
 	Token             string
@@ -69,7 +69,7 @@ type Request struct {
 	Size              string // e.g. "2048x1152"; OpenAI only
 	Quality           string // low, medium, high, auto
 	NumImages         int
-	OutputFormat      string // webp, png, jpeg
+	OutputFormat      string // webp, png, jpeg, mp4
 	OutputCompression int    // 0-100; OpenAI webp/jpeg only
 	Background        string // auto, opaque
 	Moderation        string // auto, low
@@ -77,6 +77,14 @@ type Request struct {
 	ReplicateBYOKey   string // optional OpenAI key passed through Replicate
 	InputImages       []string
 	Mask              string // OpenAI edits only
+	LastFrameImage    string // Replicate video only
+	ReferenceImages   []string
+	ReferenceVideos   []string
+	ReferenceAudios   []string
+	VideoDuration     int    // seconds; Seedance allows -1 or 4-15, 0 = default
+	VideoResolution   string // 480p, 720p, 1080p; empty = default
+	GenerateAudio     *bool  // nil = provider default
+	Seed              int    // 0 = provider random seed
 
 	PollInterval time.Duration // Replicate poll cadence; 0 = default
 	Logger       io.Writer     // logfmt event sink (info/error always written when set)
@@ -90,9 +98,17 @@ type Image struct {
 	RevisedPrompt string // populated for OpenAI when available
 }
 
-// Result groups all images produced by a Request.
+// Video is one rendered video.
+type Video struct {
+	Bytes  []byte
+	Format string
+	URL    string
+}
+
+// Result groups all assets produced by a Request.
 type Result struct {
 	Images []Image
+	Videos []Video
 }
 
 // Provider is the contract every backend implements.
@@ -162,7 +178,14 @@ func (r *Request) applyDefaults() {
 		r.Quality = "auto"
 	}
 	if r.OutputFormat == "" {
-		r.OutputFormat = "webp"
+		if IsVideoModel(r.Model) {
+			r.OutputFormat = "mp4"
+		} else {
+			r.OutputFormat = "webp"
+		}
+	}
+	if IsVideoModel(r.Model) && r.VideoResolution == "" {
+		r.VideoResolution = "720p"
 	}
 	if r.Background == "" {
 		r.Background = "auto"
@@ -200,12 +223,18 @@ func (r *Request) Validate() error {
 	if len(r.InputImages) > MaxInputImages {
 		return fmt.Errorf("at most %d input images supported, got %d", MaxInputImages, len(r.InputImages))
 	}
-	switch r.OutputFormat {
-	case "webp", "png", "jpeg":
-	default:
-		return fmt.Errorf("output_format must be webp, png, or jpeg, got %q", r.OutputFormat)
+	if IsVideoModel(r.Model) {
+		if err := r.validateVideo(); err != nil {
+			return err
+		}
+	} else {
+		switch r.OutputFormat {
+		case "webp", "png", "jpeg":
+		default:
+			return fmt.Errorf("output_format must be webp, png, or jpeg, got %q", r.OutputFormat)
+		}
 	}
-	if r.Provider == ProviderReplicate && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
+	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
 		return fmt.Errorf("replicate only supports 1:1, 3:2, 2:3 aspect ratios; got %q", r.AspectRatio)
 	}
 	if r.Provider == ProviderOpenAI && r.Size == "" && r.AspectRatio != "" && r.AspectRatio != "auto" {
@@ -223,6 +252,63 @@ func (r *Request) Validate() error {
 	return nil
 }
 
+func (r *Request) validateVideo() error {
+	if r.Provider != ProviderReplicate {
+		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	}
+	if r.NumImages != 1 {
+		return fmt.Errorf("video generation supports exactly one output, got num_images=%d", r.NumImages)
+	}
+	if r.OutputFormat != "mp4" {
+		return fmt.Errorf("video output_format must be mp4, got %q", r.OutputFormat)
+	}
+	if r.Size != "" {
+		return errors.New("video generation uses -aspect-ratio and -video-resolution; -size is image-only")
+	}
+	if r.Mask != "" {
+		return errors.New("video generation does not support -mask")
+	}
+	if r.VideoDuration != 0 && r.VideoDuration != -1 && (r.VideoDuration < 4 || r.VideoDuration > 15) {
+		return fmt.Errorf("video_duration must be -1 or 4-15 seconds, got %d", r.VideoDuration)
+	}
+	switch r.VideoResolution {
+	case "480p", "720p", "1080p":
+	default:
+		return fmt.Errorf("video_resolution must be 480p, 720p, or 1080p, got %q", r.VideoResolution)
+	}
+	switch r.AspectRatio {
+	case "16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21", "adaptive":
+	default:
+		return fmt.Errorf("seedance aspect_ratio must be 16:9, 4:3, 1:1, 3:4, 9:16, 21:9, 9:21, or adaptive; got %q", r.AspectRatio)
+	}
+	if r.LastFrameImage != "" && len(r.InputImages) == 0 {
+		return errors.New("-last-frame-image requires one -input-image first frame")
+	}
+	if r.LastFrameImage != "" && len(r.InputImages) != 1 {
+		return errors.New("-last-frame-image requires exactly one -input-image first frame")
+	}
+	if len(r.InputImages) == 1 && len(r.ReferenceImages) > 0 {
+		return errors.New("Seedance cannot combine first/last frame images with reference images")
+	}
+	referenceImageCount := len(r.ReferenceImages)
+	if len(r.InputImages) > 1 {
+		referenceImageCount += len(r.InputImages)
+	}
+	if referenceImageCount > 9 {
+		return fmt.Errorf("Seedance supports at most 9 reference images, got %d", referenceImageCount)
+	}
+	if len(r.ReferenceVideos) > 3 {
+		return fmt.Errorf("Seedance supports at most 3 reference videos, got %d", len(r.ReferenceVideos))
+	}
+	if len(r.ReferenceAudios) > 3 {
+		return fmt.Errorf("Seedance supports at most 3 reference audios, got %d", len(r.ReferenceAudios))
+	}
+	if len(r.ReferenceAudios) > 0 && len(r.ReferenceImages) == 0 && len(r.ReferenceVideos) == 0 && len(r.InputImages) == 0 {
+		return errors.New("Seedance reference audios require at least one image or video reference")
+	}
+	return nil
+}
+
 // DefaultModel returns the provider's default model name.
 func DefaultModel(provider string) string {
 	switch provider {
@@ -232,6 +318,17 @@ func DefaultModel(provider string) string {
 		return DefaultOpenAIModel
 	}
 	return ""
+}
+
+// IsVideoModel reports whether the resolved provider model produces videos.
+func IsVideoModel(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	switch model {
+	case "bytedance/seedance-2.0", "bytedance/seedance-2.0-fast":
+		return true
+	}
+	return strings.HasPrefix(model, "bytedance/seedance-2.0:") ||
+		strings.HasPrefix(model, "bytedance/seedance-2.0-fast:")
 }
 
 // AutoDetectProvider picks a provider based on the supplied env lookup.
@@ -358,6 +455,16 @@ func detectMime(path string, data []byte) string {
 		return "image/webp"
 	case ".gif":
 		return "image/gif"
+	case ".mp4":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".m4a":
+		return "audio/mp4"
 	}
 	return http.DetectContentType(data)
 }

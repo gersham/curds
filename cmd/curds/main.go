@@ -121,12 +121,27 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if opts.provider == "" {
 		opts.provider = config.DetectProvider(cfg, dotenv, os.Getenv)
 	}
+	// If the user picked a model whose config entry has only a replicate_name
+	// (e.g. seedance-2, remove-bg), force the provider to replicate. Without
+	// this, auto-detect could pick openai and ResolveModel would pass the
+	// raw key through as if it were an OpenAI model.
+	if !flagWasSet("provider") && opts.modelKey != "" {
+		if m, ok := cfg.Models[opts.modelKey]; ok && m.OpenAIName == "" && m.ReplicateName != "" {
+			opts.provider = "replicate"
+		}
+	}
 
 	// Resolve token if user didn't pass -token. CLI flag overrides everything.
 	token := opts.tokenFlag
 	if token == "" && opts.provider != "" {
 		token = config.ResolveToken(opts.provider, cfg, dotenv, os.Getenv)
 	}
+
+	// Resolve the model now (before the TUI gate) so model-aware defaults
+	// like png-output for segmentation are applied to opts.outputFormat
+	// before we compute the default output path.
+	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
+	applyModelOutputDefaults(opts, cfg, resolvedModel)
 
 	// Compute default output path if -o was not given.
 	if opts.outputPath == "" {
@@ -147,7 +162,10 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 
-	needTUI := !opts.noTUI && (opts.prompt == "" || token == "" || opts.provider == "")
+	// Segmentation models (bria/remove-background) take an input image
+	// instead of a prompt — don't drop into the prompt-asking TUI for them.
+	needsPrompt := !curds.IsSegmentationModel(resolvedModel)
+	needTUI := !opts.noTUI && (token == "" || opts.provider == "" || (needsPrompt && opts.prompt == ""))
 	if needTUI {
 		return runInteractive(start, logger, opts, cfg, token)
 	}
@@ -155,12 +173,12 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if token == "" {
 		return fmt.Errorf("no %s token available; set it in %s, .env, or %s", opts.provider, cfg.Path, envVarFor(opts.provider))
 	}
-	if strings.TrimSpace(opts.prompt) == "" {
+	if needsPrompt && strings.TrimSpace(opts.prompt) == "" {
 		return errors.New("prompt is required: use -prompt, pipe to stdin, or omit -no-tui")
 	}
-
-	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
-	applyModelOutputDefaults(opts, cfg, resolvedModel)
+	if !needsPrompt && len(opts.inputImages) == 0 {
+		return errors.New("segmentation requires -input-image PATH")
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -582,11 +600,11 @@ SYNOPSIS
   echo PROMPT | curds [flags]
 
 DESCRIPTION
-  Generates images using gpt-image-2 (default), or videos with Seedance 2.0
-  on Replicate. Saves to
-  ~/Desktop/curds/<unix_milli>.<format> unless -o is given. Auto-creates
-  ~/.config/curds/config.toml on first run. Drops into an interactive TUI
-  when prompt or token is missing (suppress with -no-tui).
+  Generates images using gpt-image-2 (default), videos with Seedance 2.0,
+  or removes backgrounds with bria/remove-background (-model remove-bg) on
+  Replicate. Saves to ~/Desktop/curds/<unix_milli>.<format> unless -o is
+  given. Auto-creates ~/.config/curds/config.toml on first run. Drops into
+  an interactive TUI when prompt or token is missing (suppress with -no-tui).
 
 PROVIDERS
   openai     OpenAI Image API direct   [recommended for OpenAI models]
@@ -670,6 +688,15 @@ FLAGS
                                 OpenAI switches to /v1/images/edits.
     -mask        PATH           mask file (openai edits only,
                                 PNG with alpha channel)
+
+  Segmentation / background removal
+    -model remove-bg            run bria/remove-background on Replicate.
+                                Requires exactly one -input-image (file path,
+                                http(s) URL, or data URL). No -prompt.
+                                Output is a transparent PNG matching the
+                                input dimensions. Output format is forced
+                                to png and -aspect-ratio / -size are
+                                ignored.
 
   Replicate-specific
     -poll-interval DURATION     status poll cadence (default: 2s)
@@ -758,6 +785,10 @@ EXAMPLES
         -prompt "a cinematic 5 second shot of a glass sculpture forming" \
         -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
 
+  # Remove the background → transparent PNG (BRIA RMBG 2.0 on Replicate)
+  curds -provider replicate -model remove-bg \
+        -input-image photo.jpg -output cutout.png
+
 FILES
   ~/.config/curds/config.toml    config (auto-created)
   ~/Desktop/curds/               default output directory (auto-created)
@@ -815,11 +846,19 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 }
 
 func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string) {
-	if !curds.IsVideoModel(model) {
+	switch {
+	case curds.IsVideoModel(model):
+		if !flagWasSet("output-format") {
+			opts.outputFormat = "mp4"
+		}
+	case curds.IsSegmentationModel(model):
+		// bria/remove-background returns a transparent PNG. Forcing PNG here
+		// avoids saving with the wrong extension when output.format is webp.
+		if !flagWasSet("output-format") {
+			opts.outputFormat = "png"
+		}
+	default:
 		return
-	}
-	if !flagWasSet("output-format") {
-		opts.outputFormat = "mp4"
 	}
 	if !flagWasSet("output") {
 		if path, err := ensureDefaultOutputPath(cfg, opts.outputFormat); err == nil {

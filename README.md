@@ -5,8 +5,9 @@
 ![curds in action](docs/curds-preview.png)
 
 Generate images from the command line via OpenAI's gpt-image-2 (direct), or
-images/videos via Replicate-hosted models such as Seedance 2.0. Logs
-upstream progress in colorized
+images/videos via Replicate-hosted models such as Seedance 2.0. Also wraps
+Replicate's `bria/remove-background` for one-shot transparent-PNG cutouts
+(`-model remove-bg`). Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
 banner, multiline prompt, spinner, scrolling log panel, and a "generate
@@ -132,6 +133,29 @@ Seedance-specific flags:
   references. In prompts, refer to them as `[Image1]`, `[Video1]`,
   `[Audio1]`, etc.
 
+## Background removal / segmentation
+
+`-model remove-bg` runs `bria/remove-background` (BRIA RMBG 2.0) on
+Replicate. It takes one input image and returns a transparent PNG with a
+soft 256-level alpha matte — the original pixels are preserved, only the
+background is removed. There's no prompt, no aspect ratio, and no
+`-quality` knob; the output dimensions match the input image.
+
+```bash
+curds -provider replicate -model remove-bg \
+      -input-image photo.jpg -output cutout.png
+```
+
+Notes:
+
+- Requires exactly one `-input-image` (file path, http(s) URL, or `data:` URL).
+- Output format is forced to PNG so the alpha channel survives.
+- `bria/remove-background` is an official Replicate model — no version pin.
+- For dedicated mask outputs (rather than a finished cutout) you can also
+  pass any other Replicate model identifier directly via `-model owner/name`,
+  but only `bria/remove-background` is wired into the validation/format
+  shortcuts.
+
 ## Aspect ratios
 
 `-aspect-ratio` accepts these named ratios (mapped to multiples-of-16
@@ -186,6 +210,9 @@ replicate_name = "openai/gpt-image-2"
 
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
+
+[models.remove-bg]
+replicate_name = "bria/remove-background"
 ```
 
 Override the path with `$CURDS_CONFIG`.

@@ -28,6 +28,12 @@ const (
 	DefaultReplicateModel = "openai/gpt-image-2"
 	DefaultOpenAIModel    = "gpt-image-2"
 
+	// DefaultSegmentationModel is the Replicate-hosted background-removal /
+	// segmentation model used when -model remove-bg is requested. BRIA RMBG
+	// 2.0 is an official Replicate model (no version pin), takes a single
+	// `image` URL and returns a transparent PNG with a 256-level alpha matte.
+	DefaultSegmentationModel = "bria/remove-background"
+
 	MaxInputImages = 16
 
 	defaultPollInterval = 2 * time.Second
@@ -178,9 +184,12 @@ func (r *Request) applyDefaults() {
 		r.Quality = "auto"
 	}
 	if r.OutputFormat == "" {
-		if IsVideoModel(r.Model) {
+		switch {
+		case IsVideoModel(r.Model):
 			r.OutputFormat = "mp4"
-		} else {
+		case IsSegmentationModel(r.Model):
+			r.OutputFormat = "png"
+		default:
 			r.OutputFormat = "webp"
 		}
 	}
@@ -211,7 +220,7 @@ func (r *Request) Validate() error {
 	if r.Token == "" {
 		return fmt.Errorf("missing %s token", r.Provider)
 	}
-	if strings.TrimSpace(r.Prompt) == "" {
+	if !IsSegmentationModel(r.Model) && strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("prompt is required")
 	}
 	if r.NumImages < 1 || r.NumImages > 10 {
@@ -223,18 +232,23 @@ func (r *Request) Validate() error {
 	if len(r.InputImages) > MaxInputImages {
 		return fmt.Errorf("at most %d input images supported, got %d", MaxInputImages, len(r.InputImages))
 	}
-	if IsVideoModel(r.Model) {
+	switch {
+	case IsVideoModel(r.Model):
 		if err := r.validateVideo(); err != nil {
 			return err
 		}
-	} else {
+	case IsSegmentationModel(r.Model):
+		if err := r.validateSegmentation(); err != nil {
+			return err
+		}
+	default:
 		switch r.OutputFormat {
 		case "webp", "png", "jpeg":
 		default:
 			return fmt.Errorf("output_format must be webp, png, or jpeg, got %q", r.OutputFormat)
 		}
 	}
-	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
+	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsSegmentationModel(r.Model) && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
 		return fmt.Errorf("replicate only supports 1:1, 3:2, 2:3 aspect ratios; got %q", r.AspectRatio)
 	}
 	if r.Provider == ProviderOpenAI && r.Size == "" && r.AspectRatio != "" && r.AspectRatio != "auto" {
@@ -309,6 +323,28 @@ func (r *Request) validateVideo() error {
 	return nil
 }
 
+func (r *Request) validateSegmentation() error {
+	if r.Provider != ProviderReplicate {
+		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	}
+	if len(r.InputImages) != 1 {
+		return fmt.Errorf("segmentation requires exactly one -input-image, got %d", len(r.InputImages))
+	}
+	if r.NumImages != 1 {
+		return fmt.Errorf("segmentation produces exactly one image, got num_images=%d", r.NumImages)
+	}
+	if r.OutputFormat != "" && r.OutputFormat != "png" {
+		return fmt.Errorf("segmentation output_format must be png (transparent), got %q", r.OutputFormat)
+	}
+	if r.Mask != "" {
+		return errors.New("segmentation does not accept -mask")
+	}
+	if r.Size != "" {
+		return errors.New("segmentation preserves the input image size; -size is not supported")
+	}
+	return nil
+}
+
 // DefaultModel returns the provider's default model name.
 func DefaultModel(provider string) string {
 	switch provider {
@@ -329,6 +365,19 @@ func IsVideoModel(model string) bool {
 	}
 	return strings.HasPrefix(model, "bytedance/seedance-2.0:") ||
 		strings.HasPrefix(model, "bytedance/seedance-2.0-fast:")
+}
+
+// IsSegmentationModel reports whether the resolved provider model performs
+// image segmentation / background removal. These models take an input image
+// and return a transparent PNG instead of generating new pixels from a
+// prompt, so they need a different validation and request-building path.
+func IsSegmentationModel(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	switch model {
+	case "bria/remove-background":
+		return true
+	}
+	return strings.HasPrefix(model, "bria/remove-background:")
 }
 
 // AutoDetectProvider picks a provider based on the supplied env lookup.

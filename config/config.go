@@ -59,6 +59,11 @@ replicate_name = "openai/gpt-image-2"
 
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
+
+# Segmentation / background removal. Replicate-only. Returns a transparent
+# PNG matching the input image's dimensions. Use with -input-image.
+[models.remove-bg]
+replicate_name = "bria/remove-background"
 `
 
 // Config is the parsed config file.
@@ -176,6 +181,11 @@ func (c *Config) applyZeroDefaults() {
 	if _, ok := c.Models["seedance-2"]; !ok {
 		c.Models["seedance-2"] = ModelConfig{
 			ReplicateName: "bytedance/seedance-2.0",
+		}
+	}
+	if _, ok := c.Models["remove-bg"]; !ok {
+		c.Models["remove-bg"] = ModelConfig{
+			ReplicateName: "bria/remove-background",
 		}
 	}
 }

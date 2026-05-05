@@ -90,6 +90,9 @@ func buildReplicateInput(req *Request) (map[string]any, error) {
 	if IsVideoModel(req.Model) {
 		return buildReplicateVideoInput(req)
 	}
+	if IsSegmentationModel(req.Model) {
+		return buildReplicateSegmentationInput(req)
+	}
 	input := map[string]any{
 		"prompt":           req.Prompt,
 		"aspect_ratio":     req.AspectRatio,
@@ -110,6 +113,18 @@ func buildReplicateInput(req *Request) (map[string]any, error) {
 		input["input_images"] = urls
 	}
 	return input, nil
+}
+
+// buildReplicateSegmentationInput builds the input for bria/remove-background
+// (and any future SAM-style models we wire in). The model takes a single
+// `image` URL/data-URL and returns one transparent PNG. No prompt, no aspect
+// ratio, no quality knob.
+func buildReplicateSegmentationInput(req *Request) (map[string]any, error) {
+	urls, err := encodeMediaAsDataURLs(req.InputImages)
+	if err != nil {
+		return nil, fmt.Errorf("prepare segmentation input image: %w", err)
+	}
+	return map[string]any{"image": urls[0]}, nil
 }
 
 func buildReplicateVideoInput(req *Request) (map[string]any, error) {

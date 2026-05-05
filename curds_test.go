@@ -633,6 +633,130 @@ func TestReplicateProviderSeedanceInputImages(t *testing.T) {
 	}
 }
 
+func TestIsSegmentationModel(t *testing.T) {
+	cases := map[string]bool{
+		"bria/remove-background":           true,
+		"BRIA/Remove-Background":           true,
+		"bria/remove-background:abc123":    true,
+		"openai/gpt-image-2":               false,
+		"bytedance/seedance-2.0":           false,
+		"":                                 false,
+		"bria/remove-background-evil/foo":  false,
+	}
+	for in, want := range cases {
+		if got := IsSegmentationModel(in); got != want {
+			t.Errorf("IsSegmentationModel(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestRequestValidateSegmentation(t *testing.T) {
+	base := Request{
+		Provider:     ProviderReplicate,
+		Token:        "tk",
+		Model:        "bria/remove-background",
+		NumImages:    1,
+		OutputFormat: "png",
+		InputImages:  []string{"https://example.com/cat.jpg"},
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"valid no prompt", func(r *Request) {}, ""},
+		{"prompt allowed but ignored", func(r *Request) { r.Prompt = "anything" }, ""},
+		{"requires input image", func(r *Request) { r.InputImages = nil }, "requires exactly one"},
+		{"rejects multiple input images", func(r *Request) {
+			r.InputImages = []string{"a", "b"}
+		}, "requires exactly one"},
+		{"rejects mask", func(r *Request) { r.Mask = "m.png" }, "does not accept -mask"},
+		{"rejects size", func(r *Request) { r.Size = "1024x1024" }, "preserves the input"},
+		{"rejects non-png output", func(r *Request) { r.OutputFormat = "webp" }, "must be png"},
+		{"rejects num_images > 1", func(r *Request) { r.NumImages = 3 }, "produces exactly one"},
+		{"rejects openai provider", func(r *Request) {
+			r.Provider = ProviderOpenAI
+		}, "only supported with provider replicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErrSub, err)
+			}
+		})
+	}
+}
+
+func TestReplicateProviderSegmentation(t *testing.T) {
+	pngBody := []byte("\x89PNGfake-cutout-bytes")
+
+	imgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBody)
+	}))
+	defer imgServer.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost ||
+			!strings.HasPrefix(r.URL.Path, "/models/bria/remove-background/predictions") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		input, _ := b["input"].(map[string]any)
+		if _, ok := input["prompt"]; ok {
+			t.Errorf("segmentation must NOT send a prompt field, body was: %v", input)
+		}
+		if got, _ := input["image"].(string); got != "https://example.com/cat.jpg" {
+			t.Errorf("image: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "seg1",
+			"status": "succeeded",
+			"output": imgServer.URL + "/cutout.png",
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:     ProviderReplicate,
+		Token:        "rtok",
+		Model:        "bria/remove-background",
+		InputImages:  []string{"https://example.com/cat.jpg"},
+		OutputFormat: "png",
+		PollInterval: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Images) != 1 {
+		t.Fatalf("want 1 image, got %d", len(res.Images))
+	}
+	if string(res.Images[0].Bytes) != string(pngBody) {
+		t.Fatalf("output bytes mismatch: %q", res.Images[0].Bytes)
+	}
+	if res.Images[0].Format != "png" {
+		t.Errorf("format: %q", res.Images[0].Format)
+	}
+}
+
 func TestReplicateProviderFailedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

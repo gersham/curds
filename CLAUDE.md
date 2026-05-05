@@ -6,8 +6,9 @@ project-local context. Keep it short and load-bearing.
 ## What this repo is
 
 A Go CLI + library for generating images via OpenAI's gpt-image-2 (direct),
-plus images/videos via Replicate-hosted models such as Seedance 2.0. Module
-path: `github.com/gersham/curds`.
+plus images/videos via Replicate-hosted models such as Seedance 2.0, plus
+background removal via Replicate's `bria/remove-background` (segmentation).
+Module path: `github.com/gersham/curds`.
 
 ## Layout
 

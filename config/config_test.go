@@ -36,6 +36,9 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.Models["seedance-2"].ReplicateName != "bytedance/seedance-2.0" {
 		t.Errorf("seedance replicate name: %q", cfg.Models["seedance-2"].ReplicateName)
 	}
+	if cfg.Models["remove-bg"].ReplicateName != "bria/remove-background" {
+		t.Errorf("remove-bg replicate name: %q", cfg.Models["remove-bg"].ReplicateName)
+	}
 
 	// Second call should NOT recreate.
 	_, created2, err := LoadOrCreateAt(path)

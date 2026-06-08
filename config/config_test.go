@@ -21,6 +21,9 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.DefaultModel != "gpt-image-2" {
 		t.Errorf("DefaultModel: %q", cfg.DefaultModel)
 	}
+	if cfg.DefaultVideoModel != "grok-imagine-video-1.5" {
+		t.Errorf("DefaultVideoModel: %q", cfg.DefaultVideoModel)
+	}
 	if cfg.Output.Directory == "" {
 		t.Errorf("Output.Directory empty")
 	}
@@ -32,6 +35,9 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	}
 	if cfg.Models["gpt-image-2"].ReplicateName != "openai/gpt-image-2" {
 		t.Errorf("replicate name: %q", cfg.Models["gpt-image-2"].ReplicateName)
+	}
+	if cfg.Models["grok-imagine-video-1.5"].ReplicateName != "xai/grok-imagine-video-1.5" {
+		t.Errorf("grok video replicate name: %q", cfg.Models["grok-imagine-video-1.5"].ReplicateName)
 	}
 	if cfg.Models["seedance-2"].ReplicateName != "bytedance/seedance-2.0" {
 		t.Errorf("seedance replicate name: %q", cfg.Models["seedance-2"].ReplicateName)
@@ -153,10 +159,12 @@ func TestExpandTilde(t *testing.T) {
 
 func TestResolveModel(t *testing.T) {
 	cfg := &Config{
-		DefaultModel: "gpt-image-2",
+		DefaultModel:      "gpt-image-2",
+		DefaultVideoModel: "grok-imagine-video-1.5",
 		Models: map[string]ModelConfig{
-			"gpt-image-2": {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
-			"seedance-2":  {ReplicateName: "bytedance/seedance-2.0"},
+			"gpt-image-2":            {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
+			"grok-imagine-video-1.5": {ReplicateName: "xai/grok-imagine-video-1.5"},
+			"seedance-2":             {ReplicateName: "bytedance/seedance-2.0"},
 		},
 	}
 	if got := ResolveModel(cfg, "", "openai"); got != "gpt-image-2" {
@@ -171,6 +179,9 @@ func TestResolveModel(t *testing.T) {
 	}
 	if got := ResolveModel(cfg, "seedance-2", "replicate"); got != "bytedance/seedance-2.0" {
 		t.Errorf("seedance: %q", got)
+	}
+	if got := ResolveModel(cfg, cfg.DefaultVideoModel, "replicate"); got != "xai/grok-imagine-video-1.5" {
+		t.Errorf("default video: %q", got)
 	}
 }
 
@@ -187,6 +198,9 @@ func TestDefaultTOMLParses(t *testing.T) {
 	// Sanity-check that the embedded TOML survives a round-trip.
 	if !strings.Contains(DefaultTOML, "[models.gpt-image-2]") {
 		t.Errorf("default TOML missing models section")
+	}
+	if !strings.Contains(DefaultTOML, "[models.grok-imagine-video-1.5]") {
+		t.Errorf("default TOML missing grok video model")
 	}
 	if !strings.Contains(DefaultTOML, "[models.seedance-2]") {
 		t.Errorf("default TOML missing seedance model")

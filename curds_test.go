@@ -92,6 +92,51 @@ func TestRequestValidate(t *testing.T) {
 			r.Provider = ProviderReplicate
 			r.AspectRatio = "3:2"
 		}, ""},
+		{"grok accepts image-to-video", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "xai/grok-imagine-video-1.5"
+			r.AspectRatio = "auto"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 1
+			r.VideoResolution = "480p"
+			r.InputImages = []string{"https://example.com/input.png"}
+		}, ""},
+		{"grok requires one input image", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "xai/grok-imagine-video-1.5"
+			r.AspectRatio = "auto"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 5
+			r.VideoResolution = "720p"
+		}, "requires exactly one -input-image"},
+		{"grok rejects seedance duration sentinel", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "xai/grok-imagine-video-1.5"
+			r.AspectRatio = "auto"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = -1
+			r.VideoResolution = "720p"
+			r.InputImages = []string{"https://example.com/input.png"}
+		}, "1-15"},
+		{"grok rejects 1080p", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "xai/grok-imagine-video-1.5"
+			r.AspectRatio = "auto"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 5
+			r.VideoResolution = "1080p"
+			r.InputImages = []string{"https://example.com/input.png"}
+		}, "480p or 720p"},
+		{"grok rejects seedance references", func(r *Request) {
+			r.Provider = ProviderReplicate
+			r.Model = "xai/grok-imagine-video-1.5"
+			r.AspectRatio = "auto"
+			r.OutputFormat = "mp4"
+			r.VideoDuration = 5
+			r.VideoResolution = "720p"
+			r.InputImages = []string{"https://example.com/input.png"}
+			r.ReferenceImages = []string{"https://example.com/ref.png"}
+		}, "does not support -reference-image"},
 		{"seedance accepts video aspect ratio", func(r *Request) {
 			r.Provider = ProviderReplicate
 			r.Model = "bytedance/seedance-2.0"
@@ -562,6 +607,83 @@ func TestReplicateProviderSeedanceVideoHappyPath(t *testing.T) {
 	}
 }
 
+func TestReplicateProviderGrokImagineVideoHappyPath(t *testing.T) {
+	videoBody := []byte("rendered-grok-mp4-bytes")
+
+	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(videoBody)
+	}))
+	defer videoServer.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/models/xai/grok-imagine-video-1.5/predictions") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		input, _ := b["input"].(map[string]any)
+		if input["prompt"] != "animate the product photo" {
+			t.Errorf("prompt: %v", input["prompt"])
+		}
+		if input["image"] != "https://example.com/product.png" {
+			t.Errorf("image: %v", input["image"])
+		}
+		if input["duration"] != float64(5) {
+			t.Errorf("duration: %v", input["duration"])
+		}
+		if input["resolution"] != "720p" {
+			t.Errorf("resolution: %v", input["resolution"])
+		}
+		if input["aspect_ratio"] != "auto" {
+			t.Errorf("aspect_ratio: %v", input["aspect_ratio"])
+		}
+		if _, ok := input["generate_audio"]; ok {
+			t.Errorf("generate_audio should not be sent to Grok Imagine Video")
+		}
+		if _, ok := input["reference_images"]; ok {
+			t.Errorf("reference_images should not be sent to Grok Imagine Video")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "grok-vid1",
+			"status": "succeeded",
+			"output": videoServer.URL + "/out.mp4",
+			"urls":   map[string]string{"get": ""},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           "xai/grok-imagine-video-1.5",
+		Prompt:          "animate the product photo",
+		AspectRatio:     "auto",
+		OutputFormat:    "mp4",
+		VideoDuration:   5,
+		VideoResolution: "720p",
+		InputImages:     []string{"https://example.com/product.png"},
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("want 1 video, got %d", len(res.Videos))
+	}
+	if string(res.Videos[0].Bytes) != string(videoBody) {
+		t.Fatalf("video bytes mismatch")
+	}
+}
+
 func TestReplicateProviderSeedanceInputImages(t *testing.T) {
 	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
@@ -633,15 +755,34 @@ func TestReplicateProviderSeedanceInputImages(t *testing.T) {
 	}
 }
 
+func TestIsVideoModel(t *testing.T) {
+	cases := map[string]bool{
+		"xai/grok-imagine-video-1.5":          true,
+		"XAI/Grok-Imagine-Video-1.5":          true,
+		"xai/grok-imagine-video-1.5:abc123":   true,
+		"bytedance/seedance-2.0":              true,
+		"bytedance/seedance-2.0-fast":         true,
+		"bytedance/seedance-2.0:abc123":       true,
+		"openai/gpt-image-2":                  false,
+		"xai/grok-imagine-video-1.5-evil/foo": false,
+		"":                                    false,
+	}
+	for in, want := range cases {
+		if got := IsVideoModel(in); got != want {
+			t.Errorf("IsVideoModel(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
 func TestIsSegmentationModel(t *testing.T) {
 	cases := map[string]bool{
-		"bria/remove-background":           true,
-		"BRIA/Remove-Background":           true,
-		"bria/remove-background:abc123":    true,
-		"openai/gpt-image-2":               false,
-		"bytedance/seedance-2.0":           false,
-		"":                                 false,
-		"bria/remove-background-evil/foo":  false,
+		"bria/remove-background":          true,
+		"BRIA/Remove-Background":          true,
+		"bria/remove-background:abc123":   true,
+		"openai/gpt-image-2":              false,
+		"bytedance/seedance-2.0":          false,
+		"":                                false,
+		"bria/remove-background-evil/foo": false,
 	}
 	for in, want := range cases {
 		if got := IsSegmentationModel(in); got != want {

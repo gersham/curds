@@ -29,6 +29,9 @@ provider = ""
 # Default model key (looked up in [models.<key>] below).
 default_model = "gpt-image-2"
 
+# Default video model key when output is mp4 and -model is omitted.
+default_video_model = "grok-imagine-video-1.5"
+
 # Output settings.
 [output]
 # Files land here. Tilde expansion is supported.
@@ -57,6 +60,9 @@ number_of_images = 1
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
 
+[models.grok-imagine-video-1.5]
+replicate_name = "xai/grok-imagine-video-1.5"
+
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
 
@@ -68,12 +74,13 @@ replicate_name = "bria/remove-background"
 
 // Config is the parsed config file.
 type Config struct {
-	Provider     string                 `toml:"provider"`
-	DefaultModel string                 `toml:"default_model"`
-	Output       OutputConfig           `toml:"output"`
-	Tokens       TokensConfig           `toml:"tokens"`
-	Defaults     DefaultsConfig         `toml:"defaults"`
-	Models       map[string]ModelConfig `toml:"models"`
+	Provider          string                 `toml:"provider"`
+	DefaultModel      string                 `toml:"default_model"`
+	DefaultVideoModel string                 `toml:"default_video_model"`
+	Output            OutputConfig           `toml:"output"`
+	Tokens            TokensConfig           `toml:"tokens"`
+	Defaults          DefaultsConfig         `toml:"defaults"`
+	Models            map[string]ModelConfig `toml:"models"`
 
 	// Path is the file the config was read from (for diagnostics).
 	Path string `toml:"-"`
@@ -145,6 +152,9 @@ func (c *Config) applyZeroDefaults() {
 	if c.DefaultModel == "" {
 		c.DefaultModel = "gpt-image-2"
 	}
+	if c.DefaultVideoModel == "" {
+		c.DefaultVideoModel = "grok-imagine-video-1.5"
+	}
 	if c.Output.Directory == "" {
 		c.Output.Directory = "~/Desktop/curds"
 	}
@@ -176,6 +186,11 @@ func (c *Config) applyZeroDefaults() {
 		c.Models["gpt-image-2"] = ModelConfig{
 			OpenAIName:    "gpt-image-2",
 			ReplicateName: "openai/gpt-image-2",
+		}
+	}
+	if _, ok := c.Models["grok-imagine-video-1.5"]; !ok {
+		c.Models["grok-imagine-video-1.5"] = ModelConfig{
+			ReplicateName: "xai/grok-imagine-video-1.5",
 		}
 	}
 	if _, ok := c.Models["seedance-2"]; !ok {

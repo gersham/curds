@@ -6,8 +6,9 @@ project-local context. Keep it short and load-bearing.
 ## What this repo is
 
 A Go CLI + library for generating images via OpenAI's gpt-image-2 (direct),
-plus images/videos via Replicate-hosted models such as Seedance 2.0, plus
-background removal via Replicate's `bria/remove-background` (segmentation).
+plus images/videos via Replicate-hosted models such as Grok Imagine Video 1.5
+and Seedance 2.0, plus background removal via Replicate's
+`bria/remove-background` (segmentation).
 Module path: `github.com/gersham/curds`.
 
 ## Layout
@@ -47,12 +48,16 @@ pre-rebrand names; the rename is complete and they should not return.
   rules. User-supplied `-size WxH` is rounded by `RoundSize`. If you expand
   the ratio map, the new entries must satisfy: both edges multiples of 16,
   edges ≤ 3840, ratio ≤ 3:1, total pixels in [655 360, 8 294 400].
-- **Video support is Replicate-only for now.** `seedance-2` maps to
-  `bytedance/seedance-2.0`, emits `Result.Videos`, and saves MP4 output.
+- **Video support is Replicate-only for now.** `grok-imagine-video-1.5` maps
+  to `xai/grok-imagine-video-1.5` and is the default video model when output is
+  MP4 and no `-model` is supplied. `seedance-2` maps to
+  `bytedance/seedance-2.0` and stays selectable. Both emit `Result.Videos` and
+  save MP4 output.
+  For Grok Imagine Video, exactly one `InputImages` entry is sent as `image`.
   For Seedance, one `InputImages` entry is sent as `image` (first frame);
   multiple `InputImages` entries are sent as `reference_images`.
-  Keep Seedance fields on `Request` and inside `ReplicateProvider`; don't add
-  video HTTP calls to the CLI or TUI.
+  Keep model-specific video fields on `Request` and inside
+  `ReplicateProvider`; don't add video HTTP calls to the CLI or TUI.
 - **Default output path:** `<config.output.directory>/<unix_milli>.<format>`.
   Changing the default path → update `config.DefaultTOML` and the README.
 - **No emojis, no chatty trailing summaries** in user-facing CLI output. Logs

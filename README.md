@@ -5,8 +5,9 @@
 ![curds in action](docs/curds-preview.png)
 
 Generate images from the command line via OpenAI's gpt-image-2 (direct), or
-images/videos via Replicate-hosted models such as Seedance 2.0. Also wraps
-Replicate's `bria/remove-background` for one-shot transparent-PNG cutouts
+images/videos via Replicate-hosted models such as Grok Imagine Video 1.5 and
+Seedance 2.0. Also wraps Replicate's `bria/remove-background` for one-shot
+transparent-PNG cutouts
 (`-model remove-bg`). Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
@@ -89,7 +90,7 @@ or by setting `provider = "openai"` in the config file.
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
 | openai    | `gpt-image-2`         | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
-| replicate | `openai/gpt-image-2`  | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
+| replicate | image: `openai/gpt-image-2`; video: `xai/grok-imagine-video-1.5` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
 
 ## Editing / composing with reference images
 
@@ -109,9 +110,27 @@ curds -input-image lounge.png -mask mask.png \
 
 ## Video generation
 
-Seedance 2.0 is available through Replicate as the `seedance-2` model key
-(`bytedance/seedance-2.0`). Video output is saved as MP4, and `-output`
-extension still wins when supplied.
+Grok Imagine Video 1.5 is the default video model. It is available through
+Replicate as the `grok-imagine-video-1.5` model key
+(`xai/grok-imagine-video-1.5`). It is image-to-video only, so pass exactly one
+`-input-image`. If `-model` is omitted and the output format is MP4, curds uses
+`default_video_model`.
+
+```bash
+curds -input-image product.png \
+      -prompt "a smooth product turn with soft studio camera motion" \
+      -output /tmp/grok.mp4
+```
+
+Grok Imagine Video 1.5 supports:
+
+- `-video-duration` — `1` through `15` seconds. Default: `5`.
+- `-video-resolution` — `480p` or `720p`. Default: `720p`.
+- `-aspect-ratio` — `auto`, `16:9`, `4:3`, `1:1`, `9:16`, `3:4`, `3:2`, or
+  `2:3`. Default: `auto` unless overridden with `-aspect-ratio`.
+
+Seedance 2.0 is still selectable through Replicate as the `seedance-2` model
+key (`bytedance/seedance-2.0`):
 
 ```bash
 curds -provider replicate -model seedance-2 \
@@ -119,7 +138,7 @@ curds -provider replicate -model seedance-2 \
       -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
 ```
 
-Seedance-specific flags:
+Seedance-specific support:
 
 - `-video-duration` — `-1` for intelligent duration, or `4` through `15`
   seconds. Default: `5`.
@@ -173,6 +192,8 @@ sizes for gpt-image-2):
 | 16:9-4k / 9:16-4k | 3840×2160 / 2160×3840 |                |
 
 Replicate's gpt-image-2 wrapper accepts only `1:1`, `3:2`, `2:3`.
+Grok Imagine Video 1.5 accepts `auto`, `16:9`, `4:3`, `1:1`, `9:16`,
+`3:4`, `3:2`, and `2:3`.
 Seedance 2.0 accepts `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`,
 `9:21`, and `adaptive`.
 
@@ -187,6 +208,7 @@ becomes `1920×1088`, for example).
 ```toml
 provider = ""                   # "openai", "replicate", or "" to auto-detect
 default_model = "gpt-image-2"
+default_video_model = "grok-imagine-video-1.5"
 
 [output]
 directory = "~/Desktop/curds"
@@ -207,6 +229,9 @@ number_of_images = 1
 [models.gpt-image-2]
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
+
+[models.grok-imagine-video-1.5]
+replicate_name = "xai/grok-imagine-video-1.5"
 
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
@@ -249,7 +274,8 @@ Run `curds -h` for the full list. Highlights:
 - `-quality` / `-output-format` / `-output-compression`
 - `-input-image` — reference image(s), repeatable or comma-separated
 - `-mask` — mask file for OpenAI edits
-- `-video-duration` / `-video-resolution` / `-no-audio` — Seedance video controls
+- `-video-duration` / `-video-resolution` — video controls
+- `-no-audio` — Seedance-only audio control
 - `-reference-image` / `-reference-video` / `-reference-audio` — Seedance references
 - `-provider`, `-token`, `-model`
 - `-open` — open generated assets in OS viewer (macOS Preview)

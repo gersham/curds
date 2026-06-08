@@ -537,7 +537,7 @@ func parseFlags() (*cliOptions, error) {
 
 	flag.StringVar(&opts.provider, "provider", "", "Provider: openai, replicate (default: from config or auto-detect)")
 	flag.StringVar(&opts.tokenFlag, "token", "", "Provider API token (overrides config/.env/env)")
-	flag.StringVar(&opts.modelKey, "model", "", "Model key from config (default: config.default_model)")
+	flag.StringVar(&opts.modelKey, "model", "", "Model key from config (default: config.default_model, or config.default_video_model for mp4 output)")
 	flag.StringVar(&opts.prompt, "prompt", "", "Prompt text (reads stdin if omitted; otherwise launches TUI)")
 	flag.StringVar(&opts.outputPath, "output", "", "Output file path (default: <output.directory>/<ms>.<format>)")
 
@@ -554,12 +554,12 @@ func parseFlags() (*cliOptions, error) {
 
 	flag.Var(&opts.inputImages, "input-image", fmt.Sprintf("Input reference image(s); repeat or comma-separate, up to %d", curds.MaxInputImages))
 	flag.StringVar(&opts.mask, "mask", "", "Mask image file (openai edits only)")
-	flag.StringVar(&opts.lastFrameImage, "last-frame-image", "", "Video last-frame image (Seedance; requires one -input-image first frame)")
+	flag.StringVar(&opts.lastFrameImage, "last-frame-image", "", "Seedance last-frame image (requires one -input-image first frame)")
 	flag.Var(&opts.referenceImages, "reference-image", "Seedance reference image(s); repeat or comma-separate, up to 9")
 	flag.Var(&opts.referenceVideos, "reference-video", "Seedance reference video(s); repeat or comma-separate, up to 3")
 	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate, up to 3")
-	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Seedance video duration in seconds: -1 or 4-15 (default: 5)")
-	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Seedance video resolution: 480p, 720p, 1080p (default: 720p)")
+	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok 1-15; Seedance -1 or 4-15 (default: 5)")
+	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Grok 480p/720p; Seedance 480p/720p/1080p (default: 720p)")
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
 
@@ -600,11 +600,12 @@ SYNOPSIS
   echo PROMPT | curds [flags]
 
 DESCRIPTION
-  Generates images using gpt-image-2 (default), videos with Seedance 2.0,
-  or removes backgrounds with bria/remove-background (-model remove-bg) on
-  Replicate. Saves to ~/Desktop/curds/<unix_milli>.<format> unless -o is
-  given. Auto-creates ~/.config/curds/config.toml on first run. Drops into
-  an interactive TUI when prompt or token is missing (suppress with -no-tui).
+  Generates images using gpt-image-2 (default), videos with Grok Imagine
+  Video 1.5 (default for mp4 output) or Seedance 2.0, or removes backgrounds
+  with bria/remove-background (-model remove-bg) on Replicate. Saves to
+  ~/Desktop/curds/<unix_milli>.<format> unless -o is given. Auto-creates
+  ~/.config/curds/config.toml on first run. Drops into an interactive TUI
+  when prompt or token is missing (suppress with -no-tui).
 
 PROVIDERS
   openai     OpenAI Image API direct   [recommended for OpenAI models]
@@ -617,7 +618,8 @@ PROVIDERS
 
   replicate  Replicate hosted
              Endpoint:  POST /v1/models/<owner>/<name>/predictions
-             Default model: openai/gpt-image-2
+             Default image model: openai/gpt-image-2
+             Default video model: xai/grok-imagine-video-1.5
              Use when: you don't have direct OpenAI access yet, or you
              want to run a non-OpenAI image or video model hosted on Replicate.
              Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
@@ -663,7 +665,8 @@ FLAGS
     -provider {openai|replicate}      backend (default: auto-detect)
     -token    STRING                  API token (overrides config/.env/env)
     -model    KEY                     model key from config
-                                      (default: config.default_model)
+                                      (default: config.default_model, or
+                                      config.default_video_model for mp4)
     -user     STRING                  end-user identifier (openai only)
     -replicate-openai-api-key STRING  BYO OpenAI key passed through
                                       Replicate (replicate only)
@@ -700,9 +703,9 @@ FLAGS
 
   Replicate-specific
     -poll-interval DURATION     status poll cadence (default: 2s)
-    -video-duration N           Seedance duration: -1 or 4-15 seconds
-                                (default: 5)
-    -video-resolution VALUE      Seedance resolution: 480p, 720p, 1080p
+    -video-duration N           Grok duration: 1-15 seconds; Seedance:
+                                -1 or 4-15 seconds (default: 5)
+    -video-resolution VALUE      Grok: 480p, 720p; Seedance also 1080p
                                 (default: 720p)
     -no-audio                    disable Seedance synchronized audio
     -seed N                      random seed for supported Replicate models
@@ -713,6 +716,10 @@ FLAGS
 
 ASPECT RATIOS
   Replicate gpt-image-2 accepts only:  1:1, 3:2, 2:3
+  Grok Imagine Video 1.5 accepts:       auto, 16:9, 4:3, 1:1,
+                                       9:16, 3:4, 3:2, 2:3
+  Seedance 2.0 accepts:                 16:9, 4:3, 1:1, 3:4,
+                                       9:16, 21:9, 9:21, adaptive
 
   OpenAI gpt-image-2 constraints:
     - both edges multiples of 16
@@ -780,6 +787,11 @@ EXAMPLES
   # Generate and open in Preview (macOS)
   curds -open -prompt "a watercolor fox in a meadow"
 
+  # Generate a Grok Imagine Video 1.5 video via Replicate
+  curds -input-image still.png \
+        -prompt "a smooth product turn with soft studio camera motion" \
+        -output /tmp/grok.mp4
+
   # Generate a Seedance 2.0 video via Replicate
   curds -provider replicate -model seedance-2 \
         -prompt "a cinematic 5 second shot of a glass sculpture forming" \
@@ -843,6 +855,9 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 			}
 		}
 	}
+	if !flagWasSet("model") && opts.outputFormat == "mp4" {
+		opts.modelKey = cfg.DefaultVideoModel
+	}
 }
 
 func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string) {
@@ -850,6 +865,9 @@ func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string
 	case curds.IsVideoModel(model):
 		if !flagWasSet("output-format") {
 			opts.outputFormat = "mp4"
+		}
+		if curds.IsGrokImagineVideoModel(model) && !flagWasSet("aspect-ratio") {
+			opts.aspectRatio = "auto"
 		}
 	case curds.IsSegmentationModel(model):
 		// bria/remove-background returns a transparent PNG. Forcing PNG here

@@ -27,6 +27,7 @@ const (
 
 	DefaultReplicateModel = "openai/gpt-image-2"
 	DefaultOpenAIModel    = "gpt-image-2"
+	DefaultVideoModel     = "xai/grok-imagine-video-1.5"
 
 	// DefaultSegmentationModel is the Replicate-hosted background-removal /
 	// segmentation model used when -model remove-bg is requested. BRIA RMBG
@@ -87,7 +88,7 @@ type Request struct {
 	ReferenceImages   []string
 	ReferenceVideos   []string
 	ReferenceAudios   []string
-	VideoDuration     int    // seconds; Seedance allows -1 or 4-15, 0 = default
+	VideoDuration     int    // seconds; model-specific, 0 = default
 	VideoResolution   string // 480p, 720p, 1080p; empty = default
 	GenerateAudio     *bool  // nil = provider default
 	Seed              int    // 0 = provider random seed
@@ -178,7 +179,11 @@ func (r *Request) applyDefaults() {
 		r.NumImages = 1
 	}
 	if r.AspectRatio == "" && r.Size == "" {
-		r.AspectRatio = "1:1"
+		if IsGrokImagineVideoModel(r.Model) {
+			r.AspectRatio = "auto"
+		} else {
+			r.AspectRatio = "1:1"
+		}
 	}
 	if r.Quality == "" {
 		r.Quality = "auto"
@@ -282,6 +287,49 @@ func (r *Request) validateVideo() error {
 	if r.Mask != "" {
 		return errors.New("video generation does not support -mask")
 	}
+	switch {
+	case IsGrokImagineVideoModel(r.Model):
+		return r.validateGrokImagineVideo()
+	case IsSeedanceModel(r.Model):
+		return r.validateSeedanceVideo()
+	default:
+		return fmt.Errorf("unsupported video model %q", r.Model)
+	}
+}
+
+func (r *Request) validateGrokImagineVideo() error {
+	if len(r.InputImages) != 1 {
+		return fmt.Errorf("Grok Imagine Video 1.5 requires exactly one -input-image, got %d", len(r.InputImages))
+	}
+	if r.VideoDuration != 0 && (r.VideoDuration < 1 || r.VideoDuration > 15) {
+		return fmt.Errorf("video_duration must be 1-15 seconds for Grok Imagine Video 1.5, got %d", r.VideoDuration)
+	}
+	switch r.VideoResolution {
+	case "480p", "720p":
+	default:
+		return fmt.Errorf("video_resolution must be 480p or 720p for Grok Imagine Video 1.5, got %q", r.VideoResolution)
+	}
+	switch r.AspectRatio {
+	case "auto", "16:9", "4:3", "1:1", "9:16", "3:4", "3:2", "2:3":
+	default:
+		return fmt.Errorf("grok-imagine-video-1.5 aspect_ratio must be auto, 16:9, 4:3, 1:1, 9:16, 3:4, 3:2, or 2:3; got %q", r.AspectRatio)
+	}
+	if r.LastFrameImage != "" {
+		return errors.New("Grok Imagine Video 1.5 does not support -last-frame-image")
+	}
+	if len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("Grok Imagine Video 1.5 does not support -reference-image, -reference-video, or -reference-audio")
+	}
+	if r.Seed != 0 {
+		return errors.New("Grok Imagine Video 1.5 does not support -seed")
+	}
+	if r.GenerateAudio != nil && !*r.GenerateAudio {
+		return errors.New("Grok Imagine Video 1.5 generates audio automatically and does not support -no-audio")
+	}
+	return nil
+}
+
+func (r *Request) validateSeedanceVideo() error {
 	if r.VideoDuration != 0 && r.VideoDuration != -1 && (r.VideoDuration < 4 || r.VideoDuration > 15) {
 		return fmt.Errorf("video_duration must be -1 or 4-15 seconds, got %d", r.VideoDuration)
 	}
@@ -358,6 +406,12 @@ func DefaultModel(provider string) string {
 
 // IsVideoModel reports whether the resolved provider model produces videos.
 func IsVideoModel(model string) bool {
+	return IsSeedanceModel(model) || IsGrokImagineVideoModel(model)
+}
+
+// IsSeedanceModel reports whether the resolved provider model is ByteDance's
+// Seedance video model.
+func IsSeedanceModel(model string) bool {
 	model = strings.TrimSpace(strings.ToLower(model))
 	switch model {
 	case "bytedance/seedance-2.0", "bytedance/seedance-2.0-fast":
@@ -365,6 +419,17 @@ func IsVideoModel(model string) bool {
 	}
 	return strings.HasPrefix(model, "bytedance/seedance-2.0:") ||
 		strings.HasPrefix(model, "bytedance/seedance-2.0-fast:")
+}
+
+// IsGrokImagineVideoModel reports whether the resolved provider model is xAI's
+// Grok Imagine Video image-to-video model.
+func IsGrokImagineVideoModel(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	switch model {
+	case DefaultVideoModel:
+		return true
+	}
+	return strings.HasPrefix(model, DefaultVideoModel+":")
 }
 
 // IsSegmentationModel reports whether the resolved provider model performs

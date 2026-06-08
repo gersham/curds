@@ -128,6 +128,31 @@ func buildReplicateSegmentationInput(req *Request) (map[string]any, error) {
 }
 
 func buildReplicateVideoInput(req *Request) (map[string]any, error) {
+	if IsGrokImagineVideoModel(req.Model) {
+		return buildReplicateGrokImagineVideoInput(req)
+	}
+	return buildReplicateSeedanceVideoInput(req)
+}
+
+func buildReplicateGrokImagineVideoInput(req *Request) (map[string]any, error) {
+	urls, err := encodeMediaAsDataURLs(req.InputImages)
+	if err != nil {
+		return nil, fmt.Errorf("prepare input image: %w", err)
+	}
+	input := map[string]any{
+		"prompt":       req.Prompt,
+		"image":        urls[0],
+		"duration":     req.VideoDuration,
+		"resolution":   req.VideoResolution,
+		"aspect_ratio": req.AspectRatio,
+	}
+	if req.VideoDuration == 0 {
+		input["duration"] = 5
+	}
+	return input, nil
+}
+
+func buildReplicateSeedanceVideoInput(req *Request) (map[string]any, error) {
 	input := map[string]any{
 		"prompt":         req.Prompt,
 		"duration":       req.VideoDuration,

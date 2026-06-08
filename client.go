@@ -3,6 +3,7 @@
 // Supported providers:
 //   - openai    (direct OpenAI Image API; default model gpt-image-2)
 //   - replicate (Replicate-hosted models; default openai/gpt-image-2)
+//   - xai       (native xAI video API; model grok-imagine-video)
 //
 // The package is transport-agnostic and intended to be reusable from a CLI,
 // HTTP service, or background worker.
@@ -24,10 +25,15 @@ import (
 const (
 	ProviderReplicate = "replicate"
 	ProviderOpenAI    = "openai"
+	ProviderXai       = "xai"
 
 	DefaultReplicateModel = "openai/gpt-image-2"
 	DefaultOpenAIModel    = "gpt-image-2"
 	DefaultVideoModel     = "xai/grok-imagine-video-1.5"
+
+	// DefaultXaiVideoModel is xAI's native Grok Imagine Video model id, used
+	// when routing video through the x.ai API directly instead of Replicate.
+	DefaultXaiVideoModel = "grok-imagine-video"
 
 	// DefaultSegmentationModel is the Replicate-hosted background-removal /
 	// segmentation model used when -model remove-bg is requested. BRIA RMBG
@@ -130,6 +136,7 @@ type Client struct {
 	HTTPClient *http.Client
 	Replicate  Provider
 	OpenAI     Provider
+	Xai        Provider
 }
 
 // New constructs a Client with default providers wired to the public APIs.
@@ -139,6 +146,7 @@ func New() *Client {
 		HTTPClient: hc,
 		Replicate:  &ReplicateProvider{HTTPClient: hc, APIBase: "https://api.replicate.com/v1"},
 		OpenAI:     &OpenAIProvider{HTTPClient: hc, APIBase: "https://api.openai.com/v1"},
+		Xai:        &XaiProvider{HTTPClient: hc, APIBase: "https://api.x.ai/v1"},
 	}
 }
 
@@ -167,6 +175,11 @@ func (c *Client) providerFor(name string) (Provider, error) {
 			return nil, errors.New("openai provider not configured")
 		}
 		return c.OpenAI, nil
+	case ProviderXai:
+		if c.Xai == nil {
+			return nil, errors.New("xai provider not configured")
+		}
+		return c.Xai, nil
 	}
 	return nil, fmt.Errorf("unsupported provider %q", name)
 }
@@ -179,7 +192,7 @@ func (r *Request) applyDefaults() {
 		r.NumImages = 1
 	}
 	if r.AspectRatio == "" && r.Size == "" {
-		if IsGrokImagineVideoModel(r.Model) {
+		if IsGrokImagineVideoModel(r.Model) || IsXaiVideoModel(r.Model) {
 			r.AspectRatio = "auto"
 		} else {
 			r.AspectRatio = "1:1"
@@ -218,9 +231,9 @@ func (r *Request) Validate() error {
 		return errors.New("provider is required")
 	}
 	switch r.Provider {
-	case ProviderReplicate, ProviderOpenAI:
+	case ProviderReplicate, ProviderOpenAI, ProviderXai:
 	default:
-		return fmt.Errorf("unsupported provider %q (supported: openai, replicate)", r.Provider)
+		return fmt.Errorf("unsupported provider %q (supported: openai, replicate, xai)", r.Provider)
 	}
 	if r.Token == "" {
 		return fmt.Errorf("missing %s token", r.Provider)
@@ -272,9 +285,6 @@ func (r *Request) Validate() error {
 }
 
 func (r *Request) validateVideo() error {
-	if r.Provider != ProviderReplicate {
-		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
-	}
 	if r.NumImages != 1 {
 		return fmt.Errorf("video generation supports exactly one output, got num_images=%d", r.NumImages)
 	}
@@ -288,13 +298,60 @@ func (r *Request) validateVideo() error {
 		return errors.New("video generation does not support -mask")
 	}
 	switch {
+	case IsXaiVideoModel(r.Model):
+		if r.Provider != ProviderXai {
+			return fmt.Errorf("model %q is only supported with provider xai", r.Model)
+		}
+		return r.validateXaiVideo()
 	case IsGrokImagineVideoModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
 		return r.validateGrokImagineVideo()
 	case IsSeedanceModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
 		return r.validateSeedanceVideo()
 	default:
 		return fmt.Errorf("unsupported video model %q", r.Model)
 	}
+}
+
+// validateXaiVideo checks a request for xAI's native Grok Imagine Video API.
+// Unlike the Replicate wrapper this supports text-to-video (image optional),
+// 1080p, and reference images. The source image goes via -input-image (0 or 1)
+// and additional references via -reference-image.
+func (r *Request) validateXaiVideo() error {
+	if len(r.InputImages) > 1 {
+		return fmt.Errorf("xai video accepts at most one -input-image source (use -reference-image for additional references), got %d", len(r.InputImages))
+	}
+	if r.VideoDuration != 0 && (r.VideoDuration < 1 || r.VideoDuration > 15) {
+		return fmt.Errorf("video_duration must be 1-15 seconds for grok-imagine-video, got %d", r.VideoDuration)
+	}
+	switch r.VideoResolution {
+	case "480p", "720p", "1080p":
+	default:
+		return fmt.Errorf("video_resolution must be 480p, 720p, or 1080p for grok-imagine-video, got %q", r.VideoResolution)
+	}
+	switch r.AspectRatio {
+	case "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3":
+	default:
+		return fmt.Errorf("grok-imagine-video aspect_ratio must be auto, 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, or 2:3; got %q", r.AspectRatio)
+	}
+	if r.LastFrameImage != "" {
+		return errors.New("xai video does not support -last-frame-image")
+	}
+	if len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("xai video does not support -reference-video or -reference-audio")
+	}
+	if r.Seed != 0 {
+		return errors.New("xai video does not support -seed")
+	}
+	if r.GenerateAudio != nil && !*r.GenerateAudio {
+		return errors.New("xai video generates audio automatically and does not support -no-audio")
+	}
+	return nil
 }
 
 func (r *Request) validateGrokImagineVideo() error {
@@ -400,13 +457,22 @@ func DefaultModel(provider string) string {
 		return DefaultReplicateModel
 	case ProviderOpenAI:
 		return DefaultOpenAIModel
+	case ProviderXai:
+		return DefaultXaiVideoModel
 	}
 	return ""
 }
 
 // IsVideoModel reports whether the resolved provider model produces videos.
 func IsVideoModel(model string) bool {
-	return IsSeedanceModel(model) || IsGrokImagineVideoModel(model)
+	return IsSeedanceModel(model) || IsGrokImagineVideoModel(model) || IsXaiVideoModel(model)
+}
+
+// IsXaiVideoModel reports whether the resolved model is xAI's native
+// Grok Imagine Video model, served by the x.ai API (provider "xai"). This is
+// distinct from the Replicate-hosted "xai/grok-imagine-video-1.5" wrapper.
+func IsXaiVideoModel(model string) bool {
+	return strings.TrimSpace(strings.ToLower(model)) == DefaultXaiVideoModel
 }
 
 // IsSeedanceModel reports whether the resolved provider model is ByteDance's

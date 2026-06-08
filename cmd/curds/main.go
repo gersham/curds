@@ -69,6 +69,7 @@ type cliOptions struct {
 	videoDuration     int
 	videoResolution   string
 	noAudio           bool
+	stripAudio        bool
 	seed              int
 	pollInterval      time.Duration
 	timeout           time.Duration
@@ -117,17 +118,32 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 
 	applyConfigDefaults(opts, cfg)
 
+	// For mp4 output with no explicit -model, prefer xAI's native
+	// grok-imagine-video when an xai token is available (cheaper and more
+	// capable than the Replicate wrapper). Otherwise keep the configured
+	// fallback (grok-imagine-video-1.5 via Replicate).
+	if !flagWasSet("model") && opts.outputFormat == "mp4" {
+		if config.ResolveToken("xai", cfg, dotenv, os.Getenv) != "" {
+			opts.modelKey = curds.DefaultXaiVideoModel
+		}
+	}
+
 	// Resolve provider.
 	if opts.provider == "" {
 		opts.provider = config.DetectProvider(cfg, dotenv, os.Getenv)
 	}
-	// If the user picked a model whose config entry has only a replicate_name
-	// (e.g. seedance-2, remove-bg), force the provider to replicate. Without
-	// this, auto-detect could pick openai and ResolveModel would pass the
-	// raw key through as if it were an OpenAI model.
+	// If the user picked a model whose config entry binds to a single provider
+	// (e.g. seedance-2/remove-bg → replicate, grok-imagine-video → xai), force
+	// that provider. Without this, auto-detect could pick the wrong one and
+	// ResolveModel would pass the raw key through as if it belonged to it.
 	if !flagWasSet("provider") && opts.modelKey != "" {
-		if m, ok := cfg.Models[opts.modelKey]; ok && m.OpenAIName == "" && m.ReplicateName != "" {
-			opts.provider = "replicate"
+		if m, ok := cfg.Models[opts.modelKey]; ok {
+			switch {
+			case m.OpenAIName == "" && m.ReplicateName == "" && m.XaiName != "":
+				opts.provider = "xai"
+			case m.OpenAIName == "" && m.ReplicateName != "":
+				opts.provider = "replicate"
+			}
 		}
 	}
 
@@ -208,6 +224,8 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if err != nil {
 		return fmt.Errorf("save: %w", err)
 	}
+
+	maybeStripAudio(opts, len(res.Videos), paths, os.Stderr)
 
 	logger.info("curds.completed",
 		"images", len(res.Images),
@@ -291,6 +309,8 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 				cfg.Tokens.OpenAI = token
 			case "replicate":
 				cfg.Tokens.Replicate = token
+			case "xai":
+				cfg.Tokens.Xai = token
 			}
 			if err := cfg.SaveTokens(); err != nil {
 				logger.error("config.save_failed", "err", err.Error())
@@ -404,6 +424,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		if err != nil {
 			return tui.GenerateResult{Err: err}
 		}
+		maybeStripAudio(opts, len(res.Videos), paths, logsink)
 		fmt.Fprint(logsink, curds.FormatLogLine(
 			"info", "curds.completed",
 			[]any{
@@ -535,7 +556,7 @@ func viewerName() string {
 func parseFlags() (*cliOptions, error) {
 	opts := &cliOptions{}
 
-	flag.StringVar(&opts.provider, "provider", "", "Provider: openai, replicate (default: from config or auto-detect)")
+	flag.StringVar(&opts.provider, "provider", "", "Provider: openai, replicate, xai (default: from config or auto-detect)")
 	flag.StringVar(&opts.tokenFlag, "token", "", "Provider API token (overrides config/.env/env)")
 	flag.StringVar(&opts.modelKey, "model", "", "Model key from config (default: config.default_model, or config.default_video_model for mp4 output)")
 	flag.StringVar(&opts.prompt, "prompt", "", "Prompt text (reads stdin if omitted; otherwise launches TUI)")
@@ -555,12 +576,13 @@ func parseFlags() (*cliOptions, error) {
 	flag.Var(&opts.inputImages, "input-image", fmt.Sprintf("Input reference image(s); repeat or comma-separate, up to %d", curds.MaxInputImages))
 	flag.StringVar(&opts.mask, "mask", "", "Mask image file (openai edits only)")
 	flag.StringVar(&opts.lastFrameImage, "last-frame-image", "", "Seedance last-frame image (requires one -input-image first frame)")
-	flag.Var(&opts.referenceImages, "reference-image", "Seedance reference image(s); repeat or comma-separate, up to 9")
+	flag.Var(&opts.referenceImages, "reference-image", "Reference image(s); repeat or comma-separate (Seedance up to 9; xai grok-imagine-video)")
 	flag.Var(&opts.referenceVideos, "reference-video", "Seedance reference video(s); repeat or comma-separate, up to 3")
 	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate, up to 3")
-	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok 1-15; Seedance -1 or 4-15 (default: 5)")
-	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Grok 480p/720p; Seedance 480p/720p/1080p (default: 720p)")
+	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok/xai 1-15; Seedance -1 or 4-15 (default: 5)")
+	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Grok 480p/720p; xai/Seedance 480p/720p/1080p (default: 720p)")
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
+	flag.BoolVar(&opts.stripAudio, "strip-audio", true, "Strip the audio track from generated videos via ffmpeg if installed (default: true)")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
 
 	flag.DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Polling interval for replicate")
@@ -592,7 +614,7 @@ func setupUsage() {
 // humans (man-page conventions, no Markdown noise on stdout).
 func helpText() string {
 	return `NAME
-  curds — generate images and videos from text prompts via OpenAI or Replicate
+  curds — generate images and videos from text prompts via OpenAI, Replicate, or xAI
 
 SYNOPSIS
   curds [flags]
@@ -601,7 +623,8 @@ SYNOPSIS
 
 DESCRIPTION
   Generates images using gpt-image-2 (default), videos with Grok Imagine
-  Video 1.5 (default for mp4 output) or Seedance 2.0, or removes backgrounds
+  Video (native xAI by default for mp4 when an xai key is set; otherwise the
+  Grok 1.5 wrapper or Seedance 2.0 on Replicate), or removes backgrounds
   with bria/remove-background (-model remove-bg) on Replicate. Saves to
   ~/Desktop/curds/<unix_milli>.<format> unless -o is given. Auto-creates
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
@@ -619,24 +642,33 @@ PROVIDERS
   replicate  Replicate hosted
              Endpoint:  POST /v1/models/<owner>/<name>/predictions
              Default image model: openai/gpt-image-2
-             Default video model: xai/grok-imagine-video-1.5
+             Fallback video model: xai/grok-imagine-video-1.5
              Use when: you don't have direct OpenAI access yet, or you
              want to run a non-OpenAI image or video model hosted on Replicate.
              Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
              restricts -aspect-ratio to 1:1, 3:2, 2:3 only, and there's
              no -size / -output-compression passthrough.
 
+  xai        xAI native video API   [recommended for video]
+             Endpoints: POST /v1/videos/generations
+                        GET  /v1/videos/{request_id}   (async polling)
+             Default model: grok-imagine-video
+             Why prefer this: ~half the Replicate cost at 720p, plus
+             text-to-video (image optional), reference images, 1080p, and
+             durations up to 15s. Image-only — no image generation.
+
   Provider auto-detect (when -provider is omitted):
     1. config.provider in ~/.config/curds/config.toml
-    2. token availability — when both tokens are present, OpenAI is
-       preferred because direct access is faster, cheaper, and exposes
-       more parameters than the Replicate wrapper.
+    2. for mp4 output with no -model, xai is preferred when an xai token
+       is available (cheaper + more capable than the Replicate wrapper).
+    3. token availability — OpenAI is preferred for images when present.
 
 TOKEN RESOLUTION (first non-empty wins)
   1. -token flag
   2. ~/.config/curds/config.toml [tokens] section
   3. .env file in cwd
-  4. environment: OPENAI_API_KEY (openai), REPLICATE_API_TOKEN (replicate)
+  4. environment: OPENAI_API_KEY (openai), REPLICATE_API_TOKEN (replicate),
+     XAI_API_KEY (xai)
 
 EXIT CODES
   0  success
@@ -662,7 +694,7 @@ FLAGS
     -timeout  DURATION          overall timeout (default 10m, 0 disables)
 
   Provider & auth
-    -provider {openai|replicate}      backend (default: auto-detect)
+    -provider {openai|replicate|xai}  backend (default: auto-detect)
     -token    STRING                  API token (overrides config/.env/env)
     -model    KEY                     model key from config
                                       (default: config.default_model, or
@@ -701,16 +733,25 @@ FLAGS
                                 to png and -aspect-ratio / -size are
                                 ignored.
 
-  Replicate-specific
+  Video (xai / Replicate)
     -poll-interval DURATION     status poll cadence (default: 2s)
-    -video-duration N           Grok duration: 1-15 seconds; Seedance:
+    -video-duration N           xai/Grok: 1-15 seconds; Seedance:
                                 -1 or 4-15 seconds (default: 5)
-    -video-resolution VALUE      Grok: 480p, 720p; Seedance also 1080p
+    -video-resolution VALUE      Grok: 480p, 720p; xai/Seedance also 1080p
                                 (default: 720p)
     -no-audio                    disable Seedance synchronized audio
+                                (xai/Grok always generate audio)
+    -strip-audio                 remove the audio track from generated
+                                videos via ffmpeg (default: true). xai/Grok
+                                always emit audio and the x.ai API has no
+                                mute option, so this is the way to get silent
+                                clips. No-op without ffmpeg on PATH; pass
+                                -strip-audio=false to keep audio.
     -seed N                      random seed for supported Replicate models
     -last-frame-image PATH       Seedance last frame; requires -input-image
-    -reference-image PATH        Seedance reference image(s), up to 9
+    -input-image PATH            xai/Grok image-to-video source (1); Seedance
+                                first frame or reference images
+    -reference-image PATH        Seedance up to 9; xai grok-imagine-video refs
     -reference-video PATH        Seedance reference video(s), up to 3
     -reference-audio PATH        Seedance reference audio(s), up to 3
 
@@ -718,6 +759,8 @@ ASPECT RATIOS
   Replicate gpt-image-2 accepts only:  1:1, 3:2, 2:3
   Grok Imagine Video 1.5 accepts:       auto, 16:9, 4:3, 1:1,
                                        9:16, 3:4, 3:2, 2:3
+  xai grok-imagine-video accepts:       auto, 1:1, 16:9, 9:16,
+                                       4:3, 3:4, 3:2, 2:3
   Seedance 2.0 accepts:                 16:9, 4:3, 1:1, 3:4,
                                        9:16, 21:9, 9:21, adaptive
 
@@ -787,8 +830,17 @@ EXAMPLES
   # Generate and open in Preview (macOS)
   curds -open -prompt "a watercolor fox in a meadow"
 
-  # Generate a Grok Imagine Video 1.5 video via Replicate
-  curds -input-image still.png \
+  # Generate video via native xAI (default for mp4 when an xai key is set):
+  #   text-to-video, no input image required
+  curds -prompt "a slow serene time-lapse of the milky way" -output /tmp/sky.mp4
+
+  # Native xAI image-to-video with a reference image, 1080p, 10s
+  curds -provider xai -input-image still.png \
+        -prompt "a smooth product turn with soft studio camera motion" \
+        -video-resolution 1080p -video-duration 10 -output /tmp/xai.mp4
+
+  # Force the Replicate Grok 1.5 wrapper instead of native xAI
+  curds -provider replicate -model grok-imagine-video-1.5 -input-image still.png \
         -prompt "a smooth product turn with soft studio camera motion" \
         -output /tmp/grok.mp4
 
@@ -810,6 +862,7 @@ ENVIRONMENT
   CURDS_CONFIG                   override config file path
   OPENAI_API_KEY                 fallback OpenAI token
   REPLICATE_API_TOKEN            fallback Replicate token
+  XAI_API_KEY                    fallback xAI token
   XDG_CONFIG_HOME                respected for default config path
 `
 }
@@ -866,7 +919,7 @@ func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string
 		if !flagWasSet("output-format") {
 			opts.outputFormat = "mp4"
 		}
-		if curds.IsGrokImagineVideoModel(model) && !flagWasSet("aspect-ratio") {
+		if (curds.IsGrokImagineVideoModel(model) || curds.IsXaiVideoModel(model)) && !flagWasSet("aspect-ratio") {
 			opts.aspectRatio = "auto"
 		}
 	case curds.IsSegmentationModel(model):
@@ -980,6 +1033,59 @@ func saveVideos(opts *cliOptions, videos []curds.Video) ([]string, error) {
 	return paths, nil
 }
 
+// maybeStripAudio removes the audio track from each generated video file when
+// -strip-audio is enabled. xAI/Grok always generate audio and the x.ai API has
+// no mute option, so post-processing is the only way to get silent clips. Uses
+// ffmpeg stream-copy (no re-encode). If ffmpeg is missing, it logs a skip and
+// leaves the file untouched; a strip failure is logged but not fatal — the
+// generated video is preserved either way. Events go to w as logfmt lines.
+func maybeStripAudio(opts *cliOptions, videoCount int, paths []string, w io.Writer) {
+	if !opts.stripAudio || videoCount == 0 {
+		return
+	}
+	color := curds.IsTerminalWriter(w)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		fmt.Fprint(w, curds.FormatLogLine("warn", "audio.strip_skipped",
+			[]any{"reason", "ffmpeg not found on PATH", "hint", "install ffmpeg or pass -strip-audio=false"}, color))
+		return
+	}
+	for _, p := range paths {
+		if strings.ToLower(filepath.Ext(p)) != ".mp4" {
+			continue
+		}
+		if err := stripAudioInPlace(ffmpeg, p); err != nil {
+			fmt.Fprint(w, curds.FormatLogLine("error", "audio.strip_failed",
+				[]any{"path", p, "err", err.Error()}, color))
+			continue
+		}
+		fmt.Fprint(w, curds.FormatLogLine("info", "audio.stripped", []any{"path", p}, color))
+	}
+}
+
+// stripAudioInPlace rewrites path with its audio track removed, copying the
+// remaining streams without re-encoding. It writes to a sibling temp file and
+// atomically renames over the original so a failure never corrupts the result.
+func stripAudioInPlace(ffmpeg, path string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "curds-noaudio-*.mp4")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	// -c copy: stream-copy (no re-encode); -an: drop all audio streams.
+	cmd := exec.Command(ffmpeg, "-y", "-loglevel", "error", "-i", path, "-c", "copy", "-an", tmpName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("ffmpeg: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
 func flagWasSet(name string) bool {
 	seen := false
 	flag.Visit(func(f *flag.Flag) {
@@ -996,6 +1102,8 @@ func envVarFor(provider string) string {
 		return "OPENAI_API_KEY"
 	case "replicate":
 		return "REPLICATE_API_TOKEN"
+	case "xai":
+		return "XAI_API_KEY"
 	}
 	return "(unknown)"
 }

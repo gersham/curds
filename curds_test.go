@@ -765,11 +765,251 @@ func TestIsVideoModel(t *testing.T) {
 		"bytedance/seedance-2.0:abc123":       true,
 		"openai/gpt-image-2":                  false,
 		"xai/grok-imagine-video-1.5-evil/foo": false,
+		"grok-imagine-video":                  true,
+		"Grok-Imagine-Video":                  true,
 		"":                                    false,
 	}
 	for in, want := range cases {
 		if got := IsVideoModel(in); got != want {
 			t.Errorf("IsVideoModel(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestIsXaiVideoModel(t *testing.T) {
+	cases := map[string]bool{
+		"grok-imagine-video":         true,
+		"Grok-Imagine-Video":         true,
+		"  grok-imagine-video  ":     true,
+		"xai/grok-imagine-video-1.5": false,
+		"grok-imagine-video-1.5":     false,
+		"":                           false,
+	}
+	for in, want := range cases {
+		if got := IsXaiVideoModel(in); got != want {
+			t.Errorf("IsXaiVideoModel(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestRequestValidateXaiVideo(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:        ProviderXai,
+			Token:           "xk",
+			Model:           "grok-imagine-video",
+			Prompt:          "a serene time-lapse",
+			NumImages:       1,
+			OutputFormat:    "mp4",
+			AspectRatio:     "auto",
+			VideoResolution: "720p",
+		}
+	}
+
+	t.Run("text-to-video ok (no image)", func(t *testing.T) {
+		r := base()
+		if err := r.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("image-to-video ok", func(t *testing.T) {
+		r := base()
+		r.InputImages = []string{"https://example.com/a.png"}
+		if err := r.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("reference image ok", func(t *testing.T) {
+		r := base()
+		r.InputImages = []string{"https://example.com/a.png"}
+		r.ReferenceImages = []string{"https://example.com/ref1.png", "https://example.com/ref2.png"}
+		if err := r.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("1080p ok", func(t *testing.T) {
+		r := base()
+		r.VideoResolution = "1080p"
+		if err := r.Validate(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("wrong provider rejected", func(t *testing.T) {
+		r := base()
+		r.Provider = ProviderReplicate
+		if err := r.Validate(); err == nil {
+			t.Fatal("expected provider error")
+		}
+	})
+	t.Run("too many input images rejected", func(t *testing.T) {
+		r := base()
+		r.InputImages = []string{"a.png", "b.png"}
+		if err := r.Validate(); err == nil {
+			t.Fatal("expected input-image count error")
+		}
+	})
+	t.Run("bad duration rejected", func(t *testing.T) {
+		r := base()
+		r.VideoDuration = 20
+		if err := r.Validate(); err == nil {
+			t.Fatal("expected duration error")
+		}
+	})
+	t.Run("no-audio rejected", func(t *testing.T) {
+		r := base()
+		no := false
+		r.GenerateAudio = &no
+		if err := r.Validate(); err == nil {
+			t.Fatal("expected no-audio error")
+		}
+	})
+	t.Run("seed rejected", func(t *testing.T) {
+		r := base()
+		r.Seed = 7
+		if err := r.Validate(); err == nil {
+			t.Fatal("expected seed error")
+		}
+	})
+}
+
+func TestXaiProviderHappyPath(t *testing.T) {
+	videoBody := []byte("rendered-xai-mp4-bytes")
+
+	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(videoBody)
+	}))
+	defer videoServer.Close()
+
+	var srv *httptest.Server
+	polls := 0
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/videos/generations":
+			body, _ := io.ReadAll(r.Body)
+			var b map[string]any
+			_ = json.Unmarshal(body, &b)
+			if b["model"] != "grok-imagine-video" {
+				t.Errorf("model: %v", b["model"])
+			}
+			if b["prompt"] != "animate the product photo" {
+				t.Errorf("prompt: %v", b["prompt"])
+			}
+			if b["duration"] != float64(10) {
+				t.Errorf("duration: %v", b["duration"])
+			}
+			if b["resolution"] != "1080p" {
+				t.Errorf("resolution: %v", b["resolution"])
+			}
+			// aspect_ratio "auto" must be omitted.
+			if _, ok := b["aspect_ratio"]; ok {
+				t.Errorf("aspect_ratio should be omitted for auto, got %v", b["aspect_ratio"])
+			}
+			img, ok := b["image"].(map[string]any)
+			if !ok || img["url"] != "https://example.com/product.png" {
+				t.Errorf("image: %v", b["image"])
+			}
+			refs, ok := b["reference_images"].([]any)
+			if !ok || len(refs) != 1 {
+				t.Errorf("reference_images: %v", b["reference_images"])
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "req-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/videos/req-123":
+			polls++
+			w.Header().Set("Content-Type", "application/json")
+			if polls < 2 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "pending", "progress": 40})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":   "done",
+				"progress": 100,
+				"video":    map[string]any{"url": videoServer.URL + "/out.mp4", "duration": 10},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Xai:        &XaiProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderXai,
+		Token:           "xk",
+		Model:           "grok-imagine-video",
+		Prompt:          "animate the product photo",
+		AspectRatio:     "auto",
+		OutputFormat:    "mp4",
+		VideoDuration:   10,
+		VideoResolution: "1080p",
+		InputImages:     []string{"https://example.com/product.png"},
+		ReferenceImages: []string{"https://example.com/ref.png"},
+		PollInterval:    5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("want 1 video, got %d", len(res.Videos))
+	}
+	if string(res.Videos[0].Bytes) != string(videoBody) {
+		t.Fatalf("video bytes mismatch")
+	}
+	if polls < 2 {
+		t.Fatalf("expected polling, got %d polls", polls)
+	}
+}
+
+func TestXaiProviderFailedStatus(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_ = json.NewEncoder(w).Encode(map[string]any{"request_id": "req-x"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "failed",
+			"error":  map[string]any{"code": "invalid_argument", "message": "bad prompt"},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{Xai: &XaiProvider{HTTPClient: srv.Client(), APIBase: srv.URL}}
+	_, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderXai,
+		Token:           "xk",
+		Model:           "grok-imagine-video",
+		Prompt:          "x",
+		OutputFormat:    "mp4",
+		AspectRatio:     "auto",
+		VideoResolution: "720p",
+		PollInterval:    5 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected failure error")
+	}
+	if !strings.Contains(err.Error(), "bad prompt") {
+		t.Fatalf("error should surface upstream message, got: %v", err)
+	}
+}
+
+func TestIsXaiHost(t *testing.T) {
+	cases := map[string]bool{
+		"https://vidgen.x.ai/bucket/v.mp4": true,
+		"https://x.ai/v.mp4":               true,
+		"https://api.x.ai/v1/videos/1":     true,
+		"https://evil.example/?x.ai":       false,
+		"https://notx.ai.evil.com/v.mp4":   false,
+		"://bad":                           false,
+	}
+	for in, want := range cases {
+		if got := isXaiHost(in); got != want {
+			t.Errorf("isXaiHost(%q) = %v want %v", in, got, want)
 		}
 	}
 }

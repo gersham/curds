@@ -65,8 +65,8 @@ const subtitle = "to complement your fries and gravy"
 var (
 	bannerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC400")).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-	hintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	headingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Bold(true)
+	hintStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	headingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Bold(true)
 	logBoxStyle   = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("241")).
@@ -85,15 +85,15 @@ var (
 
 // Defaults seeds the TUI's initial values.
 type Defaults struct {
-	Provider     string
-	Token        string // populated when caller already has one
-	AspectRatio  string
-	Quality      string
-	NumImages    int
-	OutputFormat string
-	OutputPath   string // default file path; the TUI may override
-	NeedToken    bool   // true when caller has no token yet
-	InlinePreview bool  // true to display the rendered images inline
+	Provider      string
+	Token         string // populated when caller already has one
+	AspectRatio   string
+	Quality       string
+	NumImages     int
+	OutputFormat  string
+	OutputPath    string // default file path; the TUI may override
+	NeedToken     bool   // true when caller has no token yet
+	InlinePreview bool   // true to display the rendered images inline
 }
 
 // TokenCaptured is returned by RunTokenCapture. It is empty when the user
@@ -158,6 +158,7 @@ func RunTokenCapture(d Defaults) (*TokenCaptured, error) {
 				Options(
 					huh.NewOption("OpenAI (direct)", "openai"),
 					huh.NewOption("Replicate", "replicate"),
+					huh.NewOption("xAI (Grok Imagine Video)", "xai"),
 				).
 				Value(&out.Provider),
 			huh.NewInput().
@@ -782,6 +783,7 @@ func buildSettingsForm(v *settingsFormValues) *huh.Form {
 					huh.NewOption("Auto-detect from tokens", ""),
 					huh.NewOption("OpenAI direct (recommended)", "openai"),
 					huh.NewOption("Replicate", "replicate"),
+					huh.NewOption("xAI (Grok Imagine Video)", "xai"),
 				).
 				Value(&v.Provider),
 			huh.NewSelect[string]().

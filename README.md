@@ -30,8 +30,11 @@ another?" loop after each render.
     Organization Verification to call gpt-image-2.
   - [Replicate](https://replicate.com/account/api-tokens) — alternative
     backend, no verification dance.
-- Network access to `api.openai.com` and/or `api.replicate.com`
-  (and `replicate.delivery` for downloading rendered assets).
+  - [xAI](https://console.x.ai) — native Grok Imagine Video (recommended
+    for video; cheaper than the Replicate wrapper).
+- Network access to `api.openai.com`, `api.replicate.com`, and/or
+  `api.x.ai` (plus `replicate.delivery` / `vidgen.x.ai` for downloading
+  rendered assets).
 
 ## Install
 
@@ -84,13 +87,16 @@ one and (optionally) save it to the config.
 ## Providers
 
 curds auto-selects the provider based on which token is available, with
-OpenAI preferred when both are set. Override with `-provider openai|replicate`
-or by setting `provider = "openai"` in the config file.
+OpenAI preferred for images when both are set. For MP4 output with no `-model`,
+the native xAI provider is preferred when an `xai` token is available (cheaper
+and more capable than the Replicate wrapper). Override with
+`-provider openai|replicate|xai` or by setting `provider` in the config file.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
 | openai    | `gpt-image-2`         | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
 | replicate | image: `openai/gpt-image-2`; video: `xai/grok-imagine-video-1.5` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
+| xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
 ## Editing / composing with reference images
 
@@ -110,14 +116,47 @@ curds -input-image lounge.png -mask mask.png \
 
 ## Video generation
 
-Grok Imagine Video 1.5 is the default video model. It is available through
-Replicate as the `grok-imagine-video-1.5` model key
-(`xai/grok-imagine-video-1.5`). It is image-to-video only, so pass exactly one
-`-input-image`. If `-model` is omitted and the output format is MP4, curds uses
-`default_video_model`.
+For MP4 output with no `-model`, curds prefers xAI's **native** Grok Imagine
+Video (`grok-imagine-video`, provider `xai`) when an `xai` token is available,
+and otherwise falls back to the Replicate-hosted `grok-imagine-video-1.5`
+wrapper (`default_video_model`).
+
+### Native xAI (`grok-imagine-video`)
+
+The native API is roughly half the Replicate cost at 720p and supports
+text-to-video (image optional), reference images, 1080p, and durations up to
+15s. It is asynchronous: curds submits the job, polls
+`GET /v1/videos/{request_id}`, then downloads the rendered MP4. Audio is
+generated automatically.
 
 ```bash
-curds -input-image product.png \
+# Text-to-video (no input image)
+curds -prompt "a slow serene time-lapse of the milky way" -output /tmp/sky.mp4
+
+# Image-to-video from a reference image, 1080p, 10s
+curds -provider xai -input-image still.png \
+      -prompt "a smooth product turn with soft studio camera motion" \
+      -video-resolution 1080p -video-duration 10 -output /tmp/xai.mp4
+```
+
+Native `grok-imagine-video` supports:
+
+- `-input-image` — optional image-to-video source (0 or 1).
+- `-reference-image` — additional reference image(s).
+- `-video-duration` — `1` through `15` seconds. Default: `5`.
+- `-video-resolution` — `480p`, `720p`, or `1080p`. Default: `720p`.
+- `-aspect-ratio` — `auto`, `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, or
+  `2:3`. `auto` is omitted from the request so the API derives it (from the
+  source image, for image-to-video). Default: `auto`.
+
+### Grok Imagine Video 1.5 via Replicate (`grok-imagine-video-1.5`)
+
+The Replicate wrapper is image-to-video only, so pass exactly one
+`-input-image`. Used as the MP4 fallback when no `xai` token is set, or
+explicitly via `-provider replicate -model grok-imagine-video-1.5`.
+
+```bash
+curds -provider replicate -model grok-imagine-video-1.5 -input-image product.png \
       -prompt "a smooth product turn with soft studio camera motion" \
       -output /tmp/grok.mp4
 ```
@@ -194,6 +233,8 @@ sizes for gpt-image-2):
 Replicate's gpt-image-2 wrapper accepts only `1:1`, `3:2`, `2:3`.
 Grok Imagine Video 1.5 accepts `auto`, `16:9`, `4:3`, `1:1`, `9:16`,
 `3:4`, `3:2`, and `2:3`.
+Native xAI `grok-imagine-video` accepts `auto`, `1:1`, `16:9`, `9:16`,
+`4:3`, `3:4`, `3:2`, and `2:3`.
 Seedance 2.0 accepts `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`,
 `9:21`, and `adaptive`.
 
@@ -206,9 +247,9 @@ becomes `1920×1088`, for example).
 `~/.config/curds/config.toml` (auto-created):
 
 ```toml
-provider = ""                   # "openai", "replicate", or "" to auto-detect
+provider = ""                   # "openai", "replicate", "xai", or "" to auto-detect
 default_model = "gpt-image-2"
-default_video_model = "grok-imagine-video-1.5"
+default_video_model = "grok-imagine-video-1.5"  # MP4 fallback when no xai token
 
 [output]
 directory = "~/Desktop/curds"
@@ -218,6 +259,7 @@ compression = 90
 [tokens]
 openai = ""
 replicate = ""
+xai = ""
 
 [defaults]
 quality = "auto"
@@ -229,6 +271,9 @@ number_of_images = 1
 [models.gpt-image-2]
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
+
+[models.grok-imagine-video]
+xai_name = "grok-imagine-video"
 
 [models.grok-imagine-video-1.5]
 replicate_name = "xai/grok-imagine-video-1.5"

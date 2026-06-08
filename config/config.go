@@ -23,13 +23,15 @@ const DefaultTOML = `# Curds image/video-generation config.
 #   API tokens:   config (this file) > .env in cwd > process env vars
 #   Model params: CLI flag > config defaults
 
-# Provider: "openai", "replicate", or "" to auto-detect from available tokens.
+# Provider: "openai", "replicate", "xai", or "" to auto-detect from tokens.
 provider = ""
 
 # Default model key (looked up in [models.<key>] below).
 default_model = "gpt-image-2"
 
-# Default video model key when output is mp4 and -model is omitted.
+# Fallback video model key when output is mp4 and -model is omitted. When an
+# xai token is available, the native "grok-imagine-video" (provider xai) is
+# preferred automatically; otherwise this Replicate-hosted model is used.
 default_video_model = "grok-imagine-video-1.5"
 
 # Output settings.
@@ -45,6 +47,7 @@ compression = 90
 [tokens]
 openai = ""
 replicate = ""
+xai = ""
 
 # Default image-gen parameters. Override via CLI flags.
 [defaults]
@@ -60,6 +63,12 @@ number_of_images = 1
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
 
+# Native xAI Grok Imagine Video (provider xai). Supports text-to-video
+# (image optional), reference images, 1080p, and durations up to 15s.
+[models.grok-imagine-video]
+xai_name = "grok-imagine-video"
+
+# Grok Imagine Video 1.5 via Replicate (image-to-video only, 480p/720p).
 [models.grok-imagine-video-1.5]
 replicate_name = "xai/grok-imagine-video-1.5"
 
@@ -95,6 +104,7 @@ type OutputConfig struct {
 type TokensConfig struct {
 	OpenAI    string `toml:"openai"`
 	Replicate string `toml:"replicate"`
+	Xai       string `toml:"xai"`
 }
 
 type DefaultsConfig struct {
@@ -108,6 +118,7 @@ type DefaultsConfig struct {
 type ModelConfig struct {
 	OpenAIName    string `toml:"openai_name"`
 	ReplicateName string `toml:"replicate_name"`
+	XaiName       string `toml:"xai_name"`
 }
 
 // LoadOrCreate finds the config file, creating it with defaults if missing,
@@ -186,6 +197,11 @@ func (c *Config) applyZeroDefaults() {
 		c.Models["gpt-image-2"] = ModelConfig{
 			OpenAIName:    "gpt-image-2",
 			ReplicateName: "openai/gpt-image-2",
+		}
+	}
+	if _, ok := c.Models["grok-imagine-video"]; !ok {
+		c.Models["grok-imagine-video"] = ModelConfig{
+			XaiName: "grok-imagine-video",
 		}
 	}
 	if _, ok := c.Models["grok-imagine-video-1.5"]; !ok {
@@ -292,6 +308,9 @@ func ResolveToken(provider string, cfg *Config, dotenv map[string]string, getenv
 	case "replicate":
 		fromCfg = cfg.Tokens.Replicate
 		envName = "REPLICATE_API_TOKEN"
+	case "xai":
+		fromCfg = cfg.Tokens.Xai
+		envName = "XAI_API_KEY"
 	default:
 		return ""
 	}
@@ -319,6 +338,9 @@ func DetectProvider(cfg *Config, dotenv map[string]string, getenv func(string) s
 	}
 	if ResolveToken("replicate", cfg, dotenv, getenv) != "" {
 		return "replicate"
+	}
+	if ResolveToken("xai", cfg, dotenv, getenv) != "" {
+		return "xai"
 	}
 	return ""
 }
@@ -358,6 +380,11 @@ func ResolveModel(cfg *Config, key, provider string) string {
 	case "replicate":
 		if m.ReplicateName != "" {
 			return m.ReplicateName
+		}
+		return key
+	case "xai":
+		if m.XaiName != "" {
+			return m.XaiName
 		}
 		return key
 	}

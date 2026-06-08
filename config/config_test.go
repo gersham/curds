@@ -128,6 +128,41 @@ func TestResolveTokenPriority(t *testing.T) {
 	}
 }
 
+func TestResolveTokenXai(t *testing.T) {
+	cfg := &Config{Tokens: TokensConfig{Xai: "from-config"}}
+	if got := ResolveToken("xai", cfg, nil, func(string) string { return "" }); got != "from-config" {
+		t.Errorf("xai config token: %q", got)
+	}
+	cfg.Tokens.Xai = ""
+	getenv := func(k string) string {
+		if k == "XAI_API_KEY" {
+			return "from-env"
+		}
+		return ""
+	}
+	if got := ResolveToken("xai", cfg, nil, getenv); got != "from-env" {
+		t.Errorf("xai env token: %q", got)
+	}
+}
+
+func TestDetectProviderXaiFallback(t *testing.T) {
+	cfg := &Config{Tokens: TokensConfig{Xai: "x"}}
+	if got := DetectProvider(cfg, nil, func(string) string { return "" }); got != "xai" {
+		t.Errorf("expected xai, got %q", got)
+	}
+}
+
+func TestResolveModelXai(t *testing.T) {
+	cfg := &Config{
+		Models: map[string]ModelConfig{
+			"grok-imagine-video": {XaiName: "grok-imagine-video"},
+		},
+	}
+	if got := ResolveModel(cfg, "grok-imagine-video", "xai"); got != "grok-imagine-video" {
+		t.Errorf("xai model: %q", got)
+	}
+}
+
 func TestDetectProviderPrefersConfig(t *testing.T) {
 	cfg := &Config{Provider: "replicate", Tokens: TokensConfig{OpenAI: "x"}}
 	if got := DetectProvider(cfg, nil, func(string) string { return "" }); got != "replicate" {
@@ -201,6 +236,15 @@ func TestDefaultTOMLParses(t *testing.T) {
 	}
 	if !strings.Contains(DefaultTOML, "[models.grok-imagine-video-1.5]") {
 		t.Errorf("default TOML missing grok video model")
+	}
+	if !strings.Contains(DefaultTOML, "[models.grok-imagine-video]") {
+		t.Errorf("default TOML missing native xai grok video model")
+	}
+	if m, ok := cfg.Models["grok-imagine-video"]; !ok || m.XaiName != "grok-imagine-video" {
+		t.Errorf("native xai model not parsed: %+v", cfg.Models["grok-imagine-video"])
+	}
+	if !strings.Contains(DefaultTOML, "xai = \"\"") {
+		t.Errorf("default TOML missing xai token field")
 	}
 	if !strings.Contains(DefaultTOML, "[models.seedance-2]") {
 		t.Errorf("default TOML missing seedance model")

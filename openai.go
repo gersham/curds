@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -136,13 +138,13 @@ func (p *OpenAIProvider) callEdits(ctx context.Context, req *Request, size strin
 			}
 		}
 		for _, ip := range req.InputImages {
-			if err := writeImagePart(mw, "image[]", ip); err != nil {
+			if err := writeImagePart(mw, "image[]", ip, req); err != nil {
 				fail(fmt.Errorf("image %s: %w", ip, err))
 				return
 			}
 		}
 		if req.Mask != "" {
-			if err := writeImagePart(mw, "mask", req.Mask); err != nil {
+			if err := writeImagePart(mw, "mask", req.Mask, req); err != nil {
 				fail(fmt.Errorf("mask %s: %w", req.Mask, err))
 				return
 			}
@@ -160,7 +162,7 @@ func (p *OpenAIProvider) callEdits(ctx context.Context, req *Request, size strin
 	return p.do(hreq, req)
 }
 
-func writeImagePart(mw *multipart.Writer, field, path string) error {
+func writeImagePart(mw *multipart.Writer, field, path string, req *Request) error {
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		return fmt.Errorf("openai edits requires local file paths, got URL: %s", path)
 	}
@@ -172,8 +174,23 @@ func writeImagePart(mw *multipart.Writer, field, path string) error {
 		return err
 	}
 	mt := detectMime(path, data)
+	name := filepath.Base(path)
+	if mt == "image/jpeg" {
+		// The edits endpoint rejects some JPEGs (camera ICC profiles,
+		// unusual encoder modes) with invalid_image_file. Re-encoding as
+		// PNG normalizes them; the API sees the same decoded pixels.
+		converted, cerr := jpegToPNG(data)
+		if cerr != nil {
+			logDebug(req, "image.convert_failed", "path", path, "err", cerr.Error())
+		} else {
+			logInfo(req, "image.converted", "path", path, "from", "jpeg", "to", "png", "bytes_in", len(data), "bytes_out", len(converted))
+			data = converted
+			mt = "image/png"
+			name = strings.TrimSuffix(name, filepath.Ext(name)) + ".png"
+		}
+	}
 	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, filepath.Base(path)))
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, name))
 	h.Set("Content-Type", mt)
 	pw, err := mw.CreatePart(h)
 	if err != nil {
@@ -181,6 +198,18 @@ func writeImagePart(mw *multipart.Writer, field, path string) error {
 	}
 	_, err = pw.Write(data)
 	return err
+}
+
+func jpegToPNG(data []byte) ([]byte, error) {
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func (p *OpenAIProvider) do(hreq *http.Request, req *Request) (*Result, error) {

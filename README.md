@@ -102,7 +102,10 @@ and more capable than the Replicate wrapper). Override with
 
 Pass `-input-image` (repeatable or comma-separated, up to 16). curds
 switches to OpenAI's `/v1/images/edits` endpoint or Replicate's
-`input_images` field automatically.
+`input_images` field automatically. JPEG inputs are transparently
+re-encoded as PNG for the OpenAI edits endpoint — some camera JPEGs
+(e.g. straight off an iPhone) are otherwise rejected with
+`invalid_image_file`.
 
 ```bash
 # Compose from two references

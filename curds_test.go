@@ -1,10 +1,14 @@
 package curds
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -413,6 +417,72 @@ func TestOpenAIProviderEditsMultipart(t *testing.T) {
 	}
 	if string(res.Images[0].Bytes) != string(imgBytes) {
 		t.Fatal("output bytes mismatch")
+	}
+}
+
+func TestOpenAIProviderEditsConvertsJPEGToPNG(t *testing.T) {
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "photo.jpeg")
+	src := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	var jbuf bytes.Buffer
+	if err := jpeg.Encode(&jbuf, src, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imgPath, jbuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var partName, partType string
+	var partBytes []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("ct: %v", err)
+		}
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if part.FormName() == "image[]" {
+				partName = part.FileName()
+				partType = part.Header.Get("Content-Type")
+				partBytes, _ = io.ReadAll(part)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"b64_json": base64.StdEncoding.EncodeToString([]byte("out"))},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		OpenAI:     &OpenAIProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	if _, err := c.Generate(context.Background(), &Request{
+		Provider:    ProviderOpenAI,
+		Token:       "tk",
+		Prompt:      "edit it",
+		InputImages: []string{imgPath},
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if partName != "photo.png" {
+		t.Errorf("filename: %q, want photo.png", partName)
+	}
+	if partType != "image/png" {
+		t.Errorf("content-type: %q, want image/png", partType)
+	}
+	if _, err := png.Decode(bytes.NewReader(partBytes)); err != nil {
+		t.Errorf("uploaded bytes are not valid PNG: %v", err)
 	}
 }
 

@@ -23,12 +23,25 @@ Module path: `github.com/gersham/curds`.
 ├── curds_test.go          package curds — unit + httptest tests
 ├── config/                package config — TOML loader, .env, token resolution
 ├── tui/                   package tui — huh-driven interactive form
+├── skill/                 standalone agent skill (SKILL.md + reference.md)
 └── install.sh             builds and installs to /usr/local/bin (or ~/.local/bin)
 ```
 
 The library lives at the module root. The binary is in `cmd/curds`. There is
 no `imagegen` package or `replicate-image-gen` directory — those were the
 pre-rebrand names; the rename is complete and they should not return.
+
+## Agent skill
+
+`skill/` is a **standalone** agent skill (`SKILL.md` + `reference.md`) that
+teaches a coding agent to drive the `curds` CLI mechanically. It is deliberately
+self-contained — no `../.references/` includes — so anyone who installs curds
+can install the skill by copying the directory (e.g. to `~/.claude/skills/curds`).
+Agents installing curds should install this skill too, but **only if no `curds`
+skill already exists** (don't clobber a marketplace-managed one). Keep `skill/`
+in sync with the CLI flags and provider behaviour documented elsewhere in this
+file; if you add a provider, model, or flag that changes the happy path, update
+`skill/SKILL.md` (commands) and/or `skill/reference.md` (full parameter table).
 
 ## Conventions
 

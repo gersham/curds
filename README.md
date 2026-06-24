@@ -58,6 +58,27 @@ Or with no flags at all to land in the TUI. On first run curds writes a
 default config to `~/.config/curds/config.toml` and saves output to
 `~/Desktop/curds/<unix_milli>.webp` for images, or `.mp4` for video models.
 
+## Agent skill
+
+`skill/` ships a standalone [Claude Code / agent skill](skill/SKILL.md) that
+teaches an agent to drive the `curds` CLI: assemble the right flags, run one
+command, verify the artifact, and report — without rewriting the prompt or
+launching extra jobs. It's self-contained (`SKILL.md` + `reference.md`, no
+external references), so installing curds and installing the skill go together.
+
+**If you install curds for use by a coding agent, also install this skill** —
+copy the directory into your skills location and the agent will know how to call
+curds for images, edits, video, and background removal:
+
+```bash
+# Skip this if you already have a `curds` skill installed — don't clobber it.
+test -d ~/.claude/skills/curds || cp -R skill ~/.claude/skills/curds
+```
+
+`~/.claude/skills/curds` is the per-user Claude Code location; adjust the
+destination for your agent runtime. The guard above leaves any pre-existing
+`curds` skill untouched.
+
 ## Interactive mode (TUI)
 
 Triggered when prompt or token is missing (suppress with `-no-tui`).
@@ -342,6 +363,7 @@ Run `curds -h` for the full list. Highlights:
 ├── curds_test.go          ↑ unit + httptest integration tests
 ├── config/                package config — TOML, .env, token resolution
 ├── tui/                   package tui  — huh-driven interactive form
+├── skill/                 standalone agent skill (SKILL.md + reference.md)
 ├── install.sh             builds + installs to /usr/local/bin or ~/.local/bin
 └── go.mod                 module github.com/gersham/curds
 ```

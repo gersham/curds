@@ -41,6 +41,17 @@ const (
 	// `image` URL and returns a transparent PNG with a 256-level alpha matte.
 	DefaultSegmentationModel = "bria/remove-background"
 
+	// DefaultUpscaleModel is the Replicate-hosted super-resolution model used
+	// when -model upscale is requested. nightmareai/real-esrgan takes a single
+	// `image` URL plus a `scale` factor and optional `face_enhance`, returning
+	// one upscaled PNG. It generates no new pixels from a prompt, so it shares
+	// the segmentation request/validation path.
+	DefaultUpscaleModel = "nightmareai/real-esrgan"
+
+	// DefaultUpscaleScale is the default super-resolution factor sent when the
+	// caller leaves Request.Scale at zero. Matches real-esrgan's own default.
+	DefaultUpscaleScale = 4
+
 	MaxInputImages = 16
 
 	defaultPollInterval = 2 * time.Second
@@ -94,10 +105,12 @@ type Request struct {
 	ReferenceImages   []string
 	ReferenceVideos   []string
 	ReferenceAudios   []string
-	VideoDuration     int    // seconds; model-specific, 0 = default
-	VideoResolution   string // 480p, 720p, 1080p; empty = default
-	GenerateAudio     *bool  // nil = provider default
-	Seed              int    // 0 = provider random seed
+	VideoDuration     int     // seconds; model-specific, 0 = default
+	VideoResolution   string  // 480p, 720p, 1080p; empty = default
+	GenerateAudio     *bool   // nil = provider default
+	Seed              int     // 0 = provider random seed
+	Scale             float64 // upscale factor for super-resolution models; 0 = model default
+	FaceEnhance       bool    // run GFPGAN face enhancement (upscale models only)
 
 	PollInterval time.Duration // Replicate poll cadence; 0 = default
 	Logger       io.Writer     // logfmt event sink (info/error always written when set)
@@ -205,7 +218,7 @@ func (r *Request) applyDefaults() {
 		switch {
 		case IsVideoModel(r.Model):
 			r.OutputFormat = "mp4"
-		case IsSegmentationModel(r.Model):
+		case IsSegmentationModel(r.Model), IsUpscaleModel(r.Model):
 			r.OutputFormat = "png"
 		default:
 			r.OutputFormat = "webp"
@@ -238,7 +251,7 @@ func (r *Request) Validate() error {
 	if r.Token == "" {
 		return fmt.Errorf("missing %s token", r.Provider)
 	}
-	if !IsSegmentationModel(r.Model) && strings.TrimSpace(r.Prompt) == "" {
+	if !IsSegmentationModel(r.Model) && !IsUpscaleModel(r.Model) && strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("prompt is required")
 	}
 	if r.NumImages < 1 || r.NumImages > 10 {
@@ -259,6 +272,10 @@ func (r *Request) Validate() error {
 		if err := r.validateSegmentation(); err != nil {
 			return err
 		}
+	case IsUpscaleModel(r.Model):
+		if err := r.validateUpscale(); err != nil {
+			return err
+		}
 	default:
 		switch r.OutputFormat {
 		case "webp", "png", "jpeg":
@@ -266,7 +283,7 @@ func (r *Request) Validate() error {
 			return fmt.Errorf("output_format must be webp, png, or jpeg, got %q", r.OutputFormat)
 		}
 	}
-	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsSegmentationModel(r.Model) && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
+	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsSegmentationModel(r.Model) && !IsUpscaleModel(r.Model) && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
 		return fmt.Errorf("replicate only supports 1:1, 3:2, 2:3 aspect ratios; got %q", r.AspectRatio)
 	}
 	if r.Provider == ProviderOpenAI && r.Size == "" && r.AspectRatio != "" && r.AspectRatio != "auto" {
@@ -450,6 +467,31 @@ func (r *Request) validateSegmentation() error {
 	return nil
 }
 
+func (r *Request) validateUpscale() error {
+	if r.Provider != ProviderReplicate {
+		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	}
+	if len(r.InputImages) != 1 {
+		return fmt.Errorf("upscale requires exactly one -input-image, got %d", len(r.InputImages))
+	}
+	if r.NumImages != 1 {
+		return fmt.Errorf("upscale produces exactly one image, got num_images=%d", r.NumImages)
+	}
+	if r.OutputFormat != "" && r.OutputFormat != "png" {
+		return fmt.Errorf("upscale output_format must be png, got %q", r.OutputFormat)
+	}
+	if r.Scale != 0 && (r.Scale < 1 || r.Scale > 10) {
+		return fmt.Errorf("upscale scale must be between 1 and 10, got %g", r.Scale)
+	}
+	if r.Mask != "" {
+		return errors.New("upscale does not accept -mask")
+	}
+	if r.Size != "" {
+		return errors.New("upscale derives its output size from -scale; -size is not supported")
+	}
+	return nil
+}
+
 // DefaultModel returns the provider's default model name.
 func DefaultModel(provider string) string {
 	switch provider {
@@ -509,6 +551,20 @@ func IsSegmentationModel(model string) bool {
 		return true
 	}
 	return strings.HasPrefix(model, "bria/remove-background:")
+}
+
+// IsUpscaleModel reports whether the resolved provider model performs
+// super-resolution / upscaling. Like segmentation models these take an input
+// image (plus a scale factor) and return a single image rather than generating
+// new pixels from a prompt, so they share the no-prompt validation and
+// request-building path.
+func IsUpscaleModel(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	switch model {
+	case "nightmareai/real-esrgan":
+		return true
+	}
+	return strings.HasPrefix(model, "nightmareai/real-esrgan:")
 }
 
 // AutoDetectProvider picks a provider based on the supplied env lookup.

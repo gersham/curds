@@ -79,6 +79,11 @@ replicate_name = "bytedance/seedance-2.0"
 # PNG matching the input image's dimensions. Use with -input-image.
 [models.remove-bg]
 replicate_name = "bria/remove-background"
+
+# Super-resolution / upscaling. Replicate-only. Returns a single upscaled PNG.
+# Use with -input-image, -scale, and optional -face-enhance.
+[models.upscale]
+replicate_name = "nightmareai/real-esrgan"
 `
 
 // Config is the parsed config file.
@@ -217,6 +222,11 @@ func (c *Config) applyZeroDefaults() {
 	if _, ok := c.Models["remove-bg"]; !ok {
 		c.Models["remove-bg"] = ModelConfig{
 			ReplicateName: "bria/remove-background",
+		}
+	}
+	if _, ok := c.Models["upscale"]; !ok {
+		c.Models["upscale"] = ModelConfig{
+			ReplicateName: "nightmareai/real-esrgan",
 		}
 	}
 }

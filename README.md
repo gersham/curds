@@ -7,8 +7,8 @@
 Generate images from the command line via OpenAI's gpt-image-2 (direct), or
 images/videos via Replicate-hosted models such as Grok Imagine Video 1.5 and
 Seedance 2.0. Also wraps Replicate's `bria/remove-background` for one-shot
-transparent-PNG cutouts
-(`-model remove-bg`). Logs upstream progress in colorized
+transparent-PNG cutouts (`-model remove-bg`) and `nightmareai/real-esrgan`
+for super-resolution upscaling (`-model upscale`). Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
 banner, multiline prompt, spinner, scrolling log panel, and a "generate
@@ -238,6 +238,31 @@ Notes:
   but only `bria/remove-background` is wired into the validation/format
   shortcuts.
 
+## Upscaling / super-resolution
+
+`-model upscale` runs `nightmareai/real-esrgan` on Replicate. It takes one
+input image and a `-scale` factor (1–10, default 4) and returns a single
+upscaled PNG. Like background removal there's no prompt, no aspect ratio, and
+no `-quality` knob. Pass `-face-enhance` to run GFPGAN face restoration, which
+helps on portraits and low-resolution faces.
+
+```bash
+# Upscale 4x
+curds -provider replicate -model upscale \
+      -input-image small.jpg -scale 4 -output big.png
+
+# Upscale a portrait with face enhancement
+curds -provider replicate -model upscale -face-enhance \
+      -input-image headshot.jpg -output headshot-4x.png
+```
+
+Notes:
+
+- Requires exactly one `-input-image` (file path, http(s) URL, or `data:` URL).
+- Output format is forced to PNG.
+- `-scale` accepts 1–10; the default is 4 (Real-ESRGAN's own default).
+- `nightmareai/real-esrgan` is an official Replicate model — no version pin.
+
 ## Aspect ratios
 
 `-aspect-ratio` accepts these named ratios (mapped to multiples-of-16
@@ -307,6 +332,9 @@ replicate_name = "bytedance/seedance-2.0"
 
 [models.remove-bg]
 replicate_name = "bria/remove-background"
+
+[models.upscale]
+replicate_name = "nightmareai/real-esrgan"
 ```
 
 Override the path with `$CURDS_CONFIG`.
@@ -346,6 +374,7 @@ Run `curds -h` for the full list. Highlights:
 - `-video-duration` / `-video-resolution` — video controls
 - `-no-audio` — Seedance-only audio control
 - `-reference-image` / `-reference-video` / `-reference-audio` — Seedance references
+- `-scale` / `-face-enhance` — upscale factor and face restoration (`-model upscale`)
 - `-provider`, `-token`, `-model`
 - `-open` — open generated assets in OS viewer (macOS Preview)
 - `-verbose` — debug-level logs

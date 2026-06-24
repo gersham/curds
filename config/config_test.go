@@ -45,6 +45,9 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.Models["remove-bg"].ReplicateName != "bria/remove-background" {
 		t.Errorf("remove-bg replicate name: %q", cfg.Models["remove-bg"].ReplicateName)
 	}
+	if cfg.Models["upscale"].ReplicateName != "nightmareai/real-esrgan" {
+		t.Errorf("upscale replicate name: %q", cfg.Models["upscale"].ReplicateName)
+	}
 
 	// Second call should NOT recreate.
 	_, created2, err := LoadOrCreateAt(path)
@@ -248,6 +251,12 @@ func TestDefaultTOMLParses(t *testing.T) {
 	}
 	if !strings.Contains(DefaultTOML, "[models.seedance-2]") {
 		t.Errorf("default TOML missing seedance model")
+	}
+	if !strings.Contains(DefaultTOML, "[models.upscale]") {
+		t.Errorf("default TOML missing upscale model")
+	}
+	if cfg.Models["upscale"].ReplicateName != "nightmareai/real-esrgan" {
+		t.Errorf("upscale model not parsed: %+v", cfg.Models["upscale"])
 	}
 	if cfg.Output.Directory == "" {
 		t.Errorf("output directory missing after parse")

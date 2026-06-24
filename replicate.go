@@ -93,6 +93,9 @@ func buildReplicateInput(req *Request) (map[string]any, error) {
 	if IsSegmentationModel(req.Model) {
 		return buildReplicateSegmentationInput(req)
 	}
+	if IsUpscaleModel(req.Model) {
+		return buildReplicateUpscaleInput(req)
+	}
 	input := map[string]any{
 		"prompt":           req.Prompt,
 		"aspect_ratio":     req.AspectRatio,
@@ -125,6 +128,30 @@ func buildReplicateSegmentationInput(req *Request) (map[string]any, error) {
 		return nil, fmt.Errorf("prepare segmentation input image: %w", err)
 	}
 	return map[string]any{"image": urls[0]}, nil
+}
+
+// buildReplicateUpscaleInput builds the input for nightmareai/real-esrgan
+// (and any future Real-ESRGAN-style super-resolution model we wire in). The
+// model takes a single `image` URL/data-URL, a numeric `scale` factor, and an
+// optional `face_enhance` flag, and returns one upscaled image. No prompt, no
+// aspect ratio, no quality knob.
+func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
+	urls, err := encodeMediaAsDataURLs(req.InputImages)
+	if err != nil {
+		return nil, fmt.Errorf("prepare upscale input image: %w", err)
+	}
+	scale := req.Scale
+	if scale == 0 {
+		scale = DefaultUpscaleScale
+	}
+	input := map[string]any{
+		"image": urls[0],
+		"scale": scale,
+	}
+	if req.FaceEnhance {
+		input["face_enhance"] = true
+	}
+	return input, nil
 }
 
 func buildReplicateVideoInput(req *Request) (map[string]any, error) {

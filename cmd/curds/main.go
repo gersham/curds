@@ -71,6 +71,8 @@ type cliOptions struct {
 	noAudio           bool
 	stripAudio        bool
 	seed              int
+	scale             float64
+	faceEnhance       bool
 	pollInterval      time.Duration
 	timeout           time.Duration
 	verbose           bool
@@ -178,9 +180,10 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 
-	// Segmentation models (bria/remove-background) take an input image
-	// instead of a prompt — don't drop into the prompt-asking TUI for them.
-	needsPrompt := !curds.IsSegmentationModel(resolvedModel)
+	// Segmentation (bria/remove-background) and upscale (real-esrgan) models
+	// take an input image instead of a prompt — don't drop into the
+	// prompt-asking TUI for them.
+	needsPrompt := !curds.IsSegmentationModel(resolvedModel) && !curds.IsUpscaleModel(resolvedModel)
 	needTUI := !opts.noTUI && (token == "" || opts.provider == "" || (needsPrompt && opts.prompt == ""))
 	if needTUI {
 		return runInteractive(start, logger, opts, cfg, token)
@@ -193,7 +196,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		return errors.New("prompt is required: use -prompt, pipe to stdin, or omit -no-tui")
 	}
 	if !needsPrompt && len(opts.inputImages) == 0 {
-		return errors.New("segmentation requires -input-image PATH")
+		return errors.New("this model requires -input-image PATH")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -481,6 +484,8 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		VideoResolution:   opts.videoResolution,
 		GenerateAudio:     &audio,
 		Seed:              opts.seed,
+		Scale:             opts.scale,
+		FaceEnhance:       opts.faceEnhance,
 		PollInterval:      opts.pollInterval,
 		Logger:            logger,
 		Verbose:           opts.verbose,
@@ -584,6 +589,8 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
 	flag.BoolVar(&opts.stripAudio, "strip-audio", true, "Strip the audio track from generated videos via ffmpeg if installed (default: true)")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
+	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor for -model upscale (1-10, default: 4)")
+	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement (upscale models only)")
 
 	flag.DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Polling interval for replicate")
 	flag.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Overall timeout (0 disables)")
@@ -624,8 +631,9 @@ SYNOPSIS
 DESCRIPTION
   Generates images using gpt-image-2 (default), videos with Grok Imagine
   Video (native xAI by default for mp4 when an xai key is set; otherwise the
-  Grok 1.5 wrapper or Seedance 2.0 on Replicate), or removes backgrounds
-  with bria/remove-background (-model remove-bg) on Replicate. Saves to
+  Grok 1.5 wrapper or Seedance 2.0 on Replicate), removes backgrounds
+  with bria/remove-background (-model remove-bg), or upscales images with
+  nightmareai/real-esrgan (-model upscale) on Replicate. Saves to
   ~/Desktop/curds/<unix_milli>.<format> unless -o is given. Auto-creates
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
   when prompt or token is missing (suppress with -no-tui).
@@ -732,6 +740,16 @@ FLAGS
                                 input dimensions. Output format is forced
                                 to png and -aspect-ratio / -size are
                                 ignored.
+
+  Upscaling / super-resolution
+    -model upscale              run nightmareai/real-esrgan on Replicate.
+                                Requires exactly one -input-image (file path,
+                                http(s) URL, or data URL). No -prompt.
+                                Output is an upscaled PNG. Output format is
+                                forced to png and -aspect-ratio / -size are
+                                ignored.
+    -scale N                    upscale factor, 1-10 (default: 4)
+    -face-enhance               run GFPGAN face enhancement
 
   Video (xai / Replicate)
     -poll-interval DURATION     status poll cadence (default: 2s)
@@ -853,6 +871,14 @@ EXAMPLES
   curds -provider replicate -model remove-bg \
         -input-image photo.jpg -output cutout.png
 
+  # Upscale 4x → PNG (Real-ESRGAN on Replicate)
+  curds -provider replicate -model upscale \
+        -input-image small.jpg -scale 4 -output big.png
+
+  # Upscale a portrait with face enhancement
+  curds -provider replicate -model upscale -face-enhance \
+        -input-image headshot.jpg -output headshot-4x.png
+
 FILES
   ~/.config/curds/config.toml    config (auto-created)
   ~/Desktop/curds/               default output directory (auto-created)
@@ -922,9 +948,10 @@ func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string
 		if (curds.IsGrokImagineVideoModel(model) || curds.IsXaiVideoModel(model)) && !flagWasSet("aspect-ratio") {
 			opts.aspectRatio = "auto"
 		}
-	case curds.IsSegmentationModel(model):
-		// bria/remove-background returns a transparent PNG. Forcing PNG here
-		// avoids saving with the wrong extension when output.format is webp.
+	case curds.IsSegmentationModel(model), curds.IsUpscaleModel(model):
+		// bria/remove-background returns a transparent PNG and real-esrgan
+		// returns an upscaled PNG. Forcing PNG here avoids saving with the
+		// wrong extension when output.format is webp.
 		if !flagWasSet("output-format") {
 			opts.outputFormat = "png"
 		}

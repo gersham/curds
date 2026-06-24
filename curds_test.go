@@ -1208,6 +1208,161 @@ func TestReplicateProviderSegmentation(t *testing.T) {
 	}
 }
 
+func TestIsUpscaleModel(t *testing.T) {
+	cases := map[string]bool{
+		"nightmareai/real-esrgan":        true,
+		"NightmareAI/Real-ESRGAN":        true,
+		"nightmareai/real-esrgan:abc123": true,
+		"openai/gpt-image-2":             false,
+		"bria/remove-background":         false,
+		"":                               false,
+		"nightmareai/real-esrgan-evil/x": false,
+	}
+	for in, want := range cases {
+		if got := IsUpscaleModel(in); got != want {
+			t.Errorf("IsUpscaleModel(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestRequestValidateUpscale(t *testing.T) {
+	base := Request{
+		Provider:     ProviderReplicate,
+		Token:        "tk",
+		Model:        "nightmareai/real-esrgan",
+		NumImages:    1,
+		OutputFormat: "png",
+		InputImages:  []string{"https://example.com/cat.jpg"},
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"valid no prompt", func(r *Request) {}, ""},
+		{"prompt allowed but ignored", func(r *Request) { r.Prompt = "anything" }, ""},
+		{"valid scale", func(r *Request) { r.Scale = 4 }, ""},
+		{"requires input image", func(r *Request) { r.InputImages = nil }, "requires exactly one"},
+		{"rejects multiple input images", func(r *Request) {
+			r.InputImages = []string{"a", "b"}
+		}, "requires exactly one"},
+		{"rejects mask", func(r *Request) { r.Mask = "m.png" }, "does not accept -mask"},
+		{"rejects size", func(r *Request) { r.Size = "1024x1024" }, "-size is not supported"},
+		{"rejects non-png output", func(r *Request) { r.OutputFormat = "webp" }, "must be png"},
+		{"rejects num_images > 1", func(r *Request) { r.NumImages = 3 }, "produces exactly one"},
+		{"rejects scale too low", func(r *Request) { r.Scale = 0.5 }, "scale must be between"},
+		{"rejects scale too high", func(r *Request) { r.Scale = 20 }, "scale must be between"},
+		{"rejects openai provider", func(r *Request) {
+			r.Provider = ProviderOpenAI
+		}, "only supported with provider replicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErrSub, err)
+			}
+		})
+	}
+}
+
+func TestReplicateProviderUpscale(t *testing.T) {
+	pngBody := []byte("\x89PNGfake-upscaled-bytes")
+
+	imgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBody)
+	}))
+	defer imgServer.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost ||
+			!strings.HasPrefix(r.URL.Path, "/models/nightmareai/real-esrgan/predictions") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		input, _ := b["input"].(map[string]any)
+		if _, ok := input["prompt"]; ok {
+			t.Errorf("upscale must NOT send a prompt field, body was: %v", input)
+		}
+		if got, _ := input["image"].(string); got != "https://example.com/cat.jpg" {
+			t.Errorf("image: %q", got)
+		}
+		if got, _ := input["scale"].(float64); got != 2 {
+			t.Errorf("scale: %v want 2", input["scale"])
+		}
+		if got, _ := input["face_enhance"].(bool); !got {
+			t.Errorf("face_enhance: %v want true", input["face_enhance"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "ups1",
+			"status": "succeeded",
+			"output": imgServer.URL + "/upscaled.png",
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:     ProviderReplicate,
+		Token:        "rtok",
+		Model:        "nightmareai/real-esrgan",
+		InputImages:  []string{"https://example.com/cat.jpg"},
+		OutputFormat: "png",
+		Scale:        2,
+		FaceEnhance:  true,
+		PollInterval: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Images) != 1 {
+		t.Fatalf("want 1 image, got %d", len(res.Images))
+	}
+	if string(res.Images[0].Bytes) != string(pngBody) {
+		t.Fatalf("output bytes mismatch: %q", res.Images[0].Bytes)
+	}
+	if res.Images[0].Format != "png" {
+		t.Errorf("format: %q", res.Images[0].Format)
+	}
+}
+
+func TestReplicateUpscaleDefaultScale(t *testing.T) {
+	req := &Request{
+		Provider:     ProviderReplicate,
+		Token:        "tk",
+		Model:        "nightmareai/real-esrgan",
+		InputImages:  []string{"https://example.com/cat.jpg"},
+		OutputFormat: "png",
+	}
+	input, err := buildReplicateInput(req)
+	if err != nil {
+		t.Fatalf("buildReplicateInput: %v", err)
+	}
+	if got := input["scale"]; got != float64(DefaultUpscaleScale) {
+		t.Errorf("default scale = %v want %v", got, DefaultUpscaleScale)
+	}
+	if _, ok := input["face_enhance"]; ok {
+		t.Errorf("face_enhance should be omitted when false, got %v", input["face_enhance"])
+	}
+}
+
 func TestReplicateProviderFailedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -8,7 +8,8 @@ project-local context. Keep it short and load-bearing.
 A Go CLI + library for generating images via OpenAI's gpt-image-2 (direct),
 plus images/videos via Replicate-hosted models such as Grok Imagine Video 1.5
 and Seedance 2.0, plus background removal via Replicate's
-`bria/remove-background` (segmentation).
+`bria/remove-background` (segmentation), plus image upscaling via Replicate's
+`nightmareai/real-esrgan` (super-resolution).
 Module path: `github.com/gersham/curds`.
 
 ## Layout

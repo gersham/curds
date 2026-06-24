@@ -1,6 +1,6 @@
 ---
 name: curds
-description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, or remove image backgrounds through OpenAI or Replicate.
+description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, remove image backgrounds, or upscale images through OpenAI or Replicate.
 model: haiku
 ---
 
@@ -27,7 +27,7 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   lower latency and cost, more size options, no polling). For ordinary `.mp4`
   video omit `-provider`/`-model`; curds defaults to Replicate
   `xai/grok-imagine-video-1.5`. Use `-provider replicate` only for Seedance
-  (when the user asks for it), `remove-bg`, or when OpenAI access is missing.
+  (when the user asks for it), `remove-bg`, `upscale`, or when OpenAI access is missing.
 
 ## Commands
 
@@ -43,6 +43,9 @@ curds -no-tui -input-image still.webp -prompt "$PROMPT" -aspect-ratio 1:1 -video
 
 # Background removal (transparent PNG cutout)
 curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
+
+# Upscale / super-resolution (PNG; -scale 1-10, default 4; add -face-enhance for portraits)
+curds -no-tui -provider replicate -model upscale -input-image small.jpg -scale 4 -output big.png
 ```
 
 ## Verify and report

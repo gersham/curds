@@ -52,6 +52,24 @@ curds -no-tui -provider replicate -model seedance-2 -aspect-ratio 16:9 -video-du
 - Seedance-specific flags, only on request: `-no-audio`, `-last-frame-image`,
   `-reference-image`, `-reference-video`, `-reference-audio`.
 
+## Background removal and upscaling (Replicate)
+
+Both take exactly one `-input-image` (file path, `http(s)` URL, or `data:`
+URL), no `-prompt`, and force PNG output; `-aspect-ratio` and `-size` are
+ignored.
+
+```bash
+# Background removal → transparent PNG (bria/remove-background)
+curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
+
+# Upscale / super-resolution (nightmareai/real-esrgan)
+curds -no-tui -provider replicate -model upscale -input-image small.jpg -scale 4 -output big.png
+```
+
+- `-scale`: upscale factor, `1`–`10` (default `4`). Upscale only.
+- `-face-enhance`: run GFPGAN face restoration; helps on portraits and
+  low-resolution faces. Upscale only.
+
 ## Variants
 
 `-number-of-images N` generates N variants in one call (OpenAI images).

@@ -342,11 +342,11 @@ Override the path with `$CURDS_CONFIG`.
 ## Logging
 
 Every stage emits a logfmt event to stderr. On a TTY events are colorized;
-piped output stays plain logfmt for log collectors. Add `-v` for
+piped output stays plain logfmt for log collectors. Add `-verbose` for
 debug-level events (request bodies, etc.).
 
 ```
-ts=2026-04-25T17:34:00.123Z level=info  event=curds.start version=0.1.0
+ts=2026-04-25T17:34:00.123Z level=info  event=curds.start version=0.2.0
 ts=2026-04-25T17:34:00.140Z level=info  event=config.loaded path=…
 ts=2026-04-25T17:34:00.180Z level=info  event=generation.started provider=openai size=2048x1152 prompt_chars=42
 ts=2026-04-25T17:34:00.181Z level=info  event=openai.request endpoint=… kind=generations

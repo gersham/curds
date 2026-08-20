@@ -1,6 +1,6 @@
 # Curds CLI — full parameter reference
 
-Written from `curds --help` for version `0.1.0`; if the installed help text
+Written from `curds --help` for version `0.2.0`; if the installed help text
 differs, prefer the current `curds --help` output.
 
 ## Output formats

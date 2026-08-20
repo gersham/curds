@@ -38,7 +38,7 @@ default_video_model = "grok-imagine-video-1.5"
 [output]
 # Files land here. Tilde expansion is supported.
 directory = "~/Desktop/curds"
-# Format used when -o has no extension and the model supports it.
+# Format used when -output has no extension and the model supports it.
 format = "webp"
 # Compression for webp/jpeg, 0-100 (OpenAI only).
 compression = 90

@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,9 @@ import (
 	"github.com/gersham/curds/config"
 	"github.com/gersham/curds/tui"
 )
+
+// version is the curds release version, reported by the curds.start log event.
+const version = "0.2.0"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -79,6 +83,7 @@ type cliOptions struct {
 	noTUI             bool
 	open              bool
 	inline            string // "auto" | "on" | "off"
+	showVersion       bool
 }
 
 func main() {
@@ -88,17 +93,33 @@ func main() {
 	if err := realMain(logger, start); err != nil {
 		logger.error("curds.failed", "err", err.Error(), "duration_ms", time.Since(start).Milliseconds())
 		fmt.Fprintln(os.Stderr, "error:", err)
+		// Usage problems exit 2, per the EXIT CODES section of the help.
+		var ue *usageError
+		if errors.As(err, &ue) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
 
 func realMain(logger *logfmtLogger, start time.Time) error {
-	logger.info("curds.start", "version", "0.1.0")
+	logger.info("curds.start", "version", version)
 
 	opts, err := parseFlags()
 	if err != nil {
-		flag.Usage()
+		// An explicit -help/-h is not a failure: print the help, exit 0.
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(os.Stderr, helpText())
+			return nil
+		}
+		// Anything else is a usage error. Do not dump the full help over it —
+		// a 40-line usage wall buries the one line that says what is wrong.
 		return err
+	}
+
+	if opts.showVersion {
+		fmt.Println("curds " + version)
+		return nil
 	}
 
 	cfg, created, err := config.LoadOrCreate()
@@ -161,7 +182,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
 	applyModelOutputDefaults(opts, cfg, resolvedModel)
 
-	// Compute default output path if -o was not given.
+	// Compute default output path if -output was not given.
 	if opts.outputPath == "" {
 		opts.outputPath, err = ensureDefaultOutputPath(cfg, opts.outputFormat)
 		if err != nil {
@@ -561,6 +582,12 @@ func viewerName() string {
 func parseFlags() (*cliOptions, error) {
 	opts := &cliOptions{}
 
+	// ContinueOnError + a discarded writer hands us the error instead of the
+	// stdlib printing a terse one-liner, dumping the whole help, and exiting.
+	// We render both the message and the help ourselves.
+	flag.CommandLine.Init("curds", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+
 	flag.StringVar(&opts.provider, "provider", "", "Provider: openai, replicate, xai (default: from config or auto-detect)")
 	flag.StringVar(&opts.tokenFlag, "token", "", "Provider API token (overrides config/.env/env)")
 	flag.StringVar(&opts.modelKey, "model", "", "Model key from config (default: config.default_model, or config.default_video_model for mp4 output)")
@@ -598,15 +625,160 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.noTUI, "no-tui", false, "Never enter interactive TUI; fail with an error instead")
 	flag.BoolVar(&opts.open, "open", false, "Open generated assets in the OS default viewer (macOS: Preview)")
 	flag.StringVar(&opts.inline, "inline", "auto", "Show generated images inline in the terminal: auto|on|off (auto = on in TUI, off otherwise)")
+	flag.BoolVar(&opts.showVersion, "version", false, "Print the curds version and exit")
 
 	setupUsage()
-	flag.Parse()
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, err
+		}
+		return nil, &usageError{err: explainFlagError(err)}
+	}
 
 	opts.provider = strings.ToLower(strings.TrimSpace(opts.provider))
 	if opts.outputCompression > 100 {
-		return nil, fmt.Errorf("output-compression must be 0-100, got %d", opts.outputCompression)
+		return nil, &usageError{err: fmt.Errorf("output-compression must be 0-100, got %d", opts.outputCompression)}
 	}
 	return opts, nil
+}
+
+// usageError marks a command-line usage problem so main() can exit 2, which is
+// what the EXIT CODES section of the help promises.
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+// undefinedFlagPrefix is the stdlib flag package's wording for an unknown flag.
+// Matching on it is the only way to recover the name the user actually typed —
+// the package does not expose it. If a future Go release reworks the string we
+// fall through to returning the error unchanged, which is still correct.
+const undefinedFlagPrefix = "flag provided but not defined: -"
+
+// explainFlagError turns a stdlib flag error into one actionable line. For an
+// unknown flag it names the real flags that look closest, because the failure
+// we keep hitting is a plausible-looking short form (-o, -n, -v) that curds
+// deliberately does not define: one canonical long name per flag.
+func explainFlagError(err error) error {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, undefinedFlagPrefix) {
+		return err
+	}
+	typed := strings.TrimPrefix(msg, undefinedFlagPrefix)
+	if near := suggestFlags(typed, definedFlagNames()); len(near) > 0 {
+		return fmt.Errorf("unknown flag -%s; did you mean %s? (curds -help lists every flag)",
+			typed, joinOr(near))
+	}
+	return fmt.Errorf("unknown flag -%s; curds -help lists every flag", typed)
+}
+
+// definedFlagNames returns every registered flag name.
+func definedFlagNames() []string {
+	var names []string
+	flag.VisitAll(func(f *flag.Flag) { names = append(names, f.Name) })
+	return names
+}
+
+// maxSuggestions caps the candidate list so the message stays one line.
+const maxSuggestions = 3
+
+// suggestFlags ranks defined flag names by how plausibly they are what `typed`
+// meant. A name qualifies if `typed` is a prefix of it (covers -o, -n, -out) or
+// if it is within a small edit distance (covers typos like -promt). Ranking is
+// edit distance, then length, then alphabetical, so the ordering is stable.
+func suggestFlags(typed string, defined []string) []string {
+	typed = strings.ToLower(typed)
+	if typed == "" {
+		return nil
+	}
+	// Scale the typo tolerance to the input: one edit on a short flag turns it
+	// into a different real flag, so only allow that on longer names.
+	tolerance := 1
+	if len(typed) >= 5 {
+		tolerance = 2
+	}
+
+	type cand struct {
+		name string
+		dist int
+	}
+	var cands []cand
+	for _, name := range defined {
+		lower := strings.ToLower(name)
+		d := levenshtein(typed, lower)
+		// A shared prefix catches near-misses that edit distance does not:
+		// "version" and "verbose" are 4 edits apart but share "ver".
+		if strings.HasPrefix(lower, typed) || d <= tolerance || commonPrefixLen(lower, typed) >= minSharedPrefix {
+			cands = append(cands, cand{name: name, dist: d})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].dist != cands[j].dist {
+			return cands[i].dist < cands[j].dist
+		}
+		if len(cands[i].name) != len(cands[j].name) {
+			return len(cands[i].name) < len(cands[j].name)
+		}
+		return cands[i].name < cands[j].name
+	})
+	if len(cands) > maxSuggestions {
+		cands = cands[:maxSuggestions]
+	}
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, "-"+c.name)
+	}
+	return out
+}
+
+// minSharedPrefix is how many leading characters two names must share before
+// one is offered as a suggestion for the other.
+const minSharedPrefix = 3
+
+// commonPrefixLen returns the number of leading runes a and b share.
+func commonPrefixLen(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	n := 0
+	for n < len(ar) && n < len(br) && ar[n] == br[n] {
+		n++
+	}
+	return n
+}
+
+// joinOr renders a candidate list as prose: "-a", "-a or -b", "-a, -b or -c".
+func joinOr(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " or " + items[len(items)-1]
+}
+
+// levenshtein returns the edit distance between a and b.
+func levenshtein(a, b string) int {
+	if a == b {
+		return 0
+	}
+	ar, br := []rune(a), []rune(b)
+	prev := make([]int, len(br)+1)
+	curr := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		curr[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			curr[j] = min(prev[j]+1, min(curr[j-1]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(br)]
 }
 
 func setupUsage() {
@@ -634,7 +806,7 @@ DESCRIPTION
   Grok 1.5 wrapper or Seedance 2.0 on Replicate), removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
   nightmareai/real-esrgan (-model upscale) on Replicate. Saves to
-  ~/Desktop/curds/<unix_milli>.<format> unless -o is given. Auto-creates
+  ~/Desktop/curds/<unix_milli>.<format> unless -output is given. Auto-creates
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
   when prompt or token is missing (suppress with -no-tui).
 
@@ -691,6 +863,7 @@ FLAGS
     -output   PATH              output file path
                                 default: ~/Desktop/curds/<unix_milli>.<format>
                                 extension drives -output-format unless set
+    -version                    print the curds version and exit
     -no-tui                     never enter interactive TUI; fail instead
     -open                       open generated assets in OS viewer
                                 (macOS: Preview, linux: xdg-open, win: start)
@@ -812,7 +985,7 @@ LOGGING
     ts=...  level={info|error|debug}  event=NAME  key=value ...
   TTY:    output is colorized
   Pipes:  plain logfmt, safe for log collectors
-  -v:     include debug-level events (request bodies, polling cadence)
+  -verbose: include debug-level events (request bodies, polling cadence)
 
 CONFIG FILE
   Path:    ~/.config/curds/config.toml
@@ -922,7 +1095,7 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 		opts.moderation = cfg.Defaults.Moderation
 	}
 
-	// If -o has an extension and -output-format wasn't explicitly set, derive
+	// If -output has an extension and -output-format wasn't explicitly set, derive
 	// the format from the extension so the bytes match the filename.
 	if opts.outputPath != "" && !flagWasSet("output-format") {
 		if ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(opts.outputPath), ".")); ext != "" {

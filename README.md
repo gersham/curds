@@ -109,14 +109,15 @@ one and (optionally) save it to the config.
 
 curds auto-selects the provider based on which token is available, with
 OpenAI preferred for images when both are set. For MP4 output with no `-model`,
-the native xAI provider is preferred when an `xai` token is available (cheaper
-and more capable than the Replicate wrapper). Override with
-`-provider openai|replicate|xai` or by setting `provider` in the config file.
+curds uses `default_video_model` (Replicate-hosted Seedance 2.0), falling back
+to the native xAI provider when no `replicate` token is available but an `xai`
+token is. Override with `-provider openai|replicate|xai` or by setting
+`provider` in the config file.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
 | openai    | `gpt-image-2`         | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
-| replicate | image: `openai/gpt-image-2`; video: `xai/grok-imagine-video-1.5` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
+| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
 ## Editing / composing with reference images
@@ -138,16 +139,99 @@ curds -input-image lounge.png -mask mask.png \
       -prompt "indoor lounge with flamingo in pool"
 ```
 
+## Alternative image models (Replicate)
+
+`gpt-image-2` stays the default — it still leads both Artificial Analysis image
+arenas — but two Replicate-hosted models cover cases it handles poorly:
+
+| `-model`        | Use it for                                                            |
+|-----------------|-----------------------------------------------------------------------|
+| `flux-2-pro`    | Cheap, fast bulk generation with reference-image control (~$0.015/gen) |
+| `nano-banana-2` | Character consistency across frames, multi-image compositing, cheap 4K |
+
+Both size their output differently from gpt-image-2, so they share a flag:
+**`-image-resolution`** — `0.5mp`, `1mp`, `2mp`, `4mp`, or `match_input_image`
+for FLUX.2; `1k`, `2k`, or `4k` for Nano Banana 2.
+
+```bash
+# FLUX.2 [pro], 2 megapixels, 16:9
+curds -model flux-2-pro -aspect-ratio 16:9 -image-resolution 2mp \
+      -prompt "a watercolor fox in a meadow" -output /tmp/fox.png
+
+# Nano Banana 2, 4K composite from two references
+curds -model nano-banana-2 -image-resolution 4k \
+      -input-image hero.png,logo.png \
+      -prompt "hero shot with the logo on the bottle" -output /tmp/comp.png
+
+# FLUX.2 with an explicit pixel size (edges 256-2048)
+curds -model flux-2-pro -size 1024x768 -prompt "a brass astrolabe"
+```
+
+Both take reference images through `-input-image` (not `-reference-image`),
+produce one image per request (`-number-of-images` must be 1), and ignore
+`-quality`, `-background`, and `-moderation`. Neither accepts `-mask`. FLUX.2
+supports `-seed`; Nano Banana 2 does not. Nano Banana 2 emits PNG or JPEG only
+— curds switches a webp default to PNG for it, retargeting the `-output`
+extension if needed.
+
 ## Video generation
 
-For MP4 output with no `-model`, curds prefers xAI's **native** Grok Imagine
-Video (`grok-imagine-video`, provider `xai`) when an `xai` token is available,
-and otherwise falls back to the Replicate-hosted `grok-imagine-video-1.5`
-wrapper (`default_video_model`).
+For MP4 output with no `-model`, curds uses `default_video_model` — **Seedance
+2.0** (`bytedance/seedance-2.0`, provider `replicate`), which leads on
+reference handling, multi-scene continuity, and native audio in the same pass.
+When no `replicate` token is available but an `xai` token is, curds falls back
+to xAI's native Grok Imagine Video. Kling 3.0, MiniMax H3, and the Grok 1.5
+wrapper are selectable with `-model`.
+
+### Seedance 2.0 via Replicate (`seedance-2`) — default
+
+```bash
+# Text-to-video (default; no input image required)
+curds -prompt "a cinematic 5 second shot of a glass sculpture forming" \
+      -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
+```
+
+Seedance-specific support:
+
+- `-input-image` — one entry is the first frame; multiple become reference
+  images (up to 9 total with `-reference-image`).
+- `-last-frame-image` — requires exactly one `-input-image`.
+- `-reference-video` / `-reference-audio` — up to 3 each.
+- `-video-duration` — `-1` for intelligent duration, or `4` through `15`
+  seconds. Default: `5`.
+- `-video-resolution` — `480p`, `720p`, or `1080p`. Default: `720p`.
+- `-no-audio` — disables synchronized generated audio.
+- `-seed` — optional deterministic seed.
+- `-aspect-ratio` — `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `9:21`, or
+  `adaptive`. Default: `16:9`.
+
+### Kling 3.0 via Replicate (`kling-v3`)
+
+Text-to-video or image-to-video with start/end frames, plus native audio with
+lip-synced dialogue. `-video-resolution` maps onto Kling's `mode`:
+`720p` → standard, `1080p` → pro, `4k` → 4k.
+
+```bash
+curds -model kling-v3 -input-image start.png -last-frame-image end.png \
+      -prompt "the character turns and speaks to camera" \
+      -video-resolution 1080p -video-duration 10 -output /tmp/kling.mp4
+```
+
+Kling 3.0 supports:
+
+- `-input-image` — optional start frame (0 or 1).
+- `-last-frame-image` — optional end frame; requires one `-input-image`.
+- `-video-duration` — `3` through `15` seconds. Default: `5`.
+- `-video-resolution` — `720p`, `1080p`, or `4k`. Default: `1080p`.
+- `-aspect-ratio` — `16:9`, `9:16`, or `1:1`. Default: `16:9`.
+- `-no-audio` — disables Kling's generated audio (on by default in curds).
+
+No reference images/videos/audio and no `-seed` — use `seedance-2` for those.
 
 ### Native xAI (`grok-imagine-video`)
 
-The native API is roughly half the Replicate cost at 720p and supports
+Used automatically for MP4 when no `replicate` token is available. The native
+API is roughly half the Replicate cost at 720p and supports
 text-to-video (image optional), reference images, 1080p, and durations up to
 15s. It is asynchronous: curds submits the job, polls
 `GET /v1/videos/{request_id}`, then downloads the rendered MP4. Audio is
@@ -173,11 +257,42 @@ Native `grok-imagine-video` supports:
   `2:3`. `auto` is omitted from the request so the API derives it (from the
   source image, for image-to-video). Default: `auto`.
 
+### MiniMax H3 via Replicate (`minimax-h3`)
+
+H3 is multimodal: text-to-video, first- and/or last-frame image-to-video, and
+reference-guided generation from images, videos, or audio. 4–15s at `768P`
+($0.08/s) or `2K` ($0.13/s).
+
+```bash
+# Text-to-video
+curds -model minimax-h3 -prompt "a slow serene time-lapse of the milky way" \
+      -output /tmp/sky.mp4
+
+# First-frame image-to-video, 2K, 10s
+curds -model minimax-h3 -input-image still.png \
+      -prompt "a smooth product turn with soft studio camera motion" \
+      -video-resolution 2k -video-duration 10 -output /tmp/h3.mp4
+```
+
+MiniMax H3 supports:
+
+- `-input-image` — optional first frame (0 or 1) → `first_frame_image`.
+- `-last-frame-image` — optional last frame; requires one `-input-image`.
+- `-reference-image` — up to 9 reference images.
+- `-reference-video` — up to 3 reference videos.
+- `-reference-audio` — up to 3 reference audio clips.
+- `-video-duration` — `4` through `15` seconds. Default: `5`.
+- `-video-resolution` — `768p` or `2k` (case-insensitive). Default: `768p`.
+- `-aspect-ratio` — `adaptive`, `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, or `9:16`.
+  Default: `16:9`. There is no `auto`; image-to-video uses `adaptive`.
+
+H3 has no `-seed` and no audio toggle (`-no-audio` is rejected); use
+`-strip-audio` to get a silent clip.
+
 ### Grok Imagine Video 1.5 via Replicate (`grok-imagine-video-1.5`)
 
 The Replicate wrapper is image-to-video only, so pass exactly one
-`-input-image`. Used as the MP4 fallback when no `xai` token is set, or
-explicitly via `-provider replicate -model grok-imagine-video-1.5`.
+`-input-image`. Selectable via `-provider replicate -model grok-imagine-video-1.5`.
 
 ```bash
 curds -provider replicate -model grok-imagine-video-1.5 -input-image product.png \
@@ -192,28 +307,8 @@ Grok Imagine Video 1.5 supports:
 - `-aspect-ratio` — `auto`, `16:9`, `4:3`, `1:1`, `9:16`, `3:4`, `3:2`, or
   `2:3`. Default: `auto` unless overridden with `-aspect-ratio`.
 
-Seedance 2.0 is still selectable through Replicate as the `seedance-2` model
-key (`bytedance/seedance-2.0`):
-
-```bash
-curds -provider replicate -model seedance-2 \
-      -prompt "a cinematic 5 second shot of a glass sculpture forming" \
-      -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
-```
-
-Seedance-specific support:
-
-- `-video-duration` — `-1` for intelligent duration, or `4` through `15`
-  seconds. Default: `5`.
-- `-video-resolution` — `480p`, `720p`, or `1080p`. Default: `720p`.
-- `-no-audio` — disables synchronized generated audio.
-- `-seed` — optional deterministic seed.
-- `-input-image` — one image becomes the first frame for image-to-video;
-  multiple images are sent as Seedance `reference_images`.
-- `-last-frame-image` — optional ending frame; requires `-input-image`.
-- `-reference-image`, `-reference-video`, `-reference-audio` — multimodal
-  references. In prompts, refer to them as `[Image1]`, `[Video1]`,
-  `[Audio1]`, etc.
+In prompts, refer to Seedance references as `[Image1]`, `[Video1]`,
+`[Audio1]`, etc.
 
 ## Background removal / segmentation
 
@@ -263,6 +358,23 @@ Notes:
 - `-scale` accepts 1–10; the default is 4 (Real-ESRGAN's own default).
 - `nightmareai/real-esrgan` is an official Replicate model — no version pin.
 
+### Topaz (`upscale-pro`)
+
+Real-ESRGAN dates from 2021 and goes soft on faces and text.
+`-model upscale-pro` runs `topazlabs/image-upscale` instead, which is
+materially better on both.
+
+```bash
+curds -model upscale-pro -input-image small.jpg -scale 4 -output big.png
+
+# Portrait with face enhancement
+curds -model upscale-pro -input-image headshot.jpg -scale 2 -face-enhance
+```
+
+- `-scale` accepts `2`, `4`, or `6` — omit it for enhance-only (no resize).
+- `-face-enhance` requires a `-scale`; Topaz applies it during the upscale pass.
+- Same shape as `upscale` otherwise: one `-input-image`, no prompt, PNG out.
+
 ## Aspect ratios
 
 `-aspect-ratio` accepts these named ratios (mapped to multiples-of-16
@@ -286,6 +398,13 @@ Native xAI `grok-imagine-video` accepts `auto`, `1:1`, `16:9`, `9:16`,
 `4:3`, `3:4`, `3:2`, and `2:3`.
 Seedance 2.0 accepts `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`,
 `9:21`, and `adaptive`.
+Kling 3.0 accepts `16:9`, `9:16`, and `1:1`.
+FLUX.2 [pro] accepts `match_input_image`, `1:1`, `16:9`, `3:2`, `2:3`,
+`4:5`, `5:4`, `9:16`, `3:4`, `4:3` — or `-size WxH` with edges 256–2048.
+Nano Banana 2 accepts `match_input_image`, `1:1`, `1:4`, `1:8`, `2:3`,
+`3:2`, `3:4`, `4:1`, `4:3`, `4:5`, `5:4`, `8:1`, `9:16`, `16:9`, `21:9`.
+MiniMax H3 accepts `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, and
+`adaptive`.
 
 For something custom, pass `-size WxH`. Anything not on a 16-pixel
 boundary is rounded to the nearest valid value (true 1080p `1920×1080`
@@ -298,7 +417,7 @@ becomes `1920×1088`, for example).
 ```toml
 provider = ""                   # "openai", "replicate", "xai", or "" to auto-detect
 default_model = "gpt-image-2"
-default_video_model = "grok-imagine-video-1.5"  # MP4 fallback when no xai token
+default_video_model = "seedance-2"              # model used for MP4 output
 
 [output]
 directory = "~/Desktop/curds"
@@ -320,6 +439,21 @@ number_of_images = 1
 [models.gpt-image-2]
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
+
+[models.flux-2-pro]
+replicate_name = "black-forest-labs/flux-2-pro"
+
+[models.nano-banana-2]
+replicate_name = "google/nano-banana-2"
+
+[models.minimax-h3]
+replicate_name = "minimax/h3"
+
+[models.kling-v3]
+replicate_name = "kwaivgi/kling-v3-video"
+
+[models.upscale-pro]
+replicate_name = "topazlabs/image-upscale"
 
 [models.grok-imagine-video]
 xai_name = "grok-imagine-video"

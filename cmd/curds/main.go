@@ -70,6 +70,7 @@ type cliOptions struct {
 	referenceImages   imageList
 	referenceVideos   imageList
 	referenceAudios   imageList
+	imageResolution   string
 	videoDuration     int
 	videoResolution   string
 	noAudio           bool
@@ -141,12 +142,18 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 
 	applyConfigDefaults(opts, cfg)
 
-	// For mp4 output with no explicit -model, prefer xAI's native
-	// grok-imagine-video when an xai token is available (cheaper and more
-	// capable than the Replicate wrapper). Otherwise keep the configured
-	// fallback (grok-imagine-video-1.5 via Replicate).
-	if !flagWasSet("model") && opts.outputFormat == "mp4" {
-		if config.ResolveToken("xai", cfg, dotenv, os.Getenv) != "" {
+	// For mp4 output with no explicit -model, the configured video model
+	// (Replicate-hosted Seedance 2.0 by default) wins. Fall back to xAI's
+	// native grok-imagine-video only when that model needs a replicate token we
+	// don't have and an xai token is available.
+	if !flagWasSet("model") && opts.outputFormat == "mp4" && !flagWasSet("provider") {
+		needsReplicate := true
+		if m, ok := cfg.Models[opts.modelKey]; ok && m.ReplicateName == "" {
+			needsReplicate = false
+		}
+		if needsReplicate && config.ResolveToken("replicate", cfg, dotenv, os.Getenv) == "" &&
+			config.ResolveToken("xai", cfg, dotenv, os.Getenv) != "" {
+			logger.info("video.model_fallback", "from", opts.modelKey, "to", curds.DefaultXaiVideoModel, "reason", "no replicate token")
 			opts.modelKey = curds.DefaultXaiVideoModel
 		}
 	}
@@ -180,7 +187,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	// like png-output for segmentation are applied to opts.outputFormat
 	// before we compute the default output path.
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
-	applyModelOutputDefaults(opts, cfg, resolvedModel)
+	applyModelOutputDefaults(opts, cfg, resolvedModel, logger)
 
 	// Compute default output path if -output was not given.
 	if opts.outputPath == "" {
@@ -347,7 +354,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 
 	opts.provider = provider
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
-	applyModelOutputDefaults(opts, cfg, resolvedModel)
+	applyModelOutputDefaults(opts, cfg, resolvedModel, logger)
 
 	defaults := tui.Defaults{
 		Provider:      opts.provider,
@@ -502,6 +509,7 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		ReferenceVideos:   []string(opts.referenceVideos),
 		ReferenceAudios:   []string(opts.referenceAudios),
 		VideoDuration:     opts.videoDuration,
+		ImageResolution:   opts.imageResolution,
 		VideoResolution:   opts.videoResolution,
 		GenerateAudio:     &audio,
 		Seed:              opts.seed,
@@ -608,15 +616,16 @@ func parseFlags() (*cliOptions, error) {
 	flag.Var(&opts.inputImages, "input-image", fmt.Sprintf("Input reference image(s); repeat or comma-separate, up to %d", curds.MaxInputImages))
 	flag.StringVar(&opts.mask, "mask", "", "Mask image file (openai edits only)")
 	flag.StringVar(&opts.lastFrameImage, "last-frame-image", "", "Seedance last-frame image (requires one -input-image first frame)")
-	flag.Var(&opts.referenceImages, "reference-image", "Reference image(s); repeat or comma-separate (Seedance up to 9; xai grok-imagine-video)")
+	flag.Var(&opts.referenceImages, "reference-image", "Reference image(s); repeat or comma-separate (MiniMax H3 and Seedance up to 9; xai grok-imagine-video)")
 	flag.Var(&opts.referenceVideos, "reference-video", "Seedance reference video(s); repeat or comma-separate, up to 3")
 	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate, up to 3")
 	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok/xai 1-15; Seedance -1 or 4-15 (default: 5)")
-	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Grok 480p/720p; xai/Seedance 480p/720p/1080p (default: 720p)")
+	flag.StringVar(&opts.imageResolution, "image-resolution", "", "Image resolution for models that size by target: flux-2-pro 0.5mp/1mp/2mp/4mp; nano-banana-2 1k/2k/4k")
+	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Kling 720p/1080p/4k (default: 1080p); MiniMax H3 768p/2k (default: 768p); Grok 480p/720p; xai/Seedance 480p/720p/1080p (default: 720p)")
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
 	flag.BoolVar(&opts.stripAudio, "strip-audio", true, "Strip the audio track from generated videos via ffmpeg if installed (default: true)")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
-	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor for -model upscale (1-10, default: 4)")
+	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
 	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement (upscale models only)")
 
 	flag.DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Polling interval for replicate")
@@ -801,9 +810,10 @@ SYNOPSIS
   echo PROMPT | curds [flags]
 
 DESCRIPTION
-  Generates images using gpt-image-2 (default), videos with Grok Imagine
-  Video (native xAI by default for mp4 when an xai key is set; otherwise the
-  Grok 1.5 wrapper or Seedance 2.0 on Replicate), removes backgrounds
+  Generates images using gpt-image-2 (default; FLUX.2 [pro] and Nano Banana 2
+  also available on Replicate), videos with Seedance 2.0 on Replicate (default
+  for mp4; Kling 3.0, MiniMax H3, Grok Imagine Video also selectable),
+  removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
   nightmareai/real-esrgan (-model upscale) on Replicate. Saves to
   ~/Desktop/curds/<unix_milli>.<format> unless -output is given. Auto-creates
@@ -822,25 +832,30 @@ PROVIDERS
   replicate  Replicate hosted
              Endpoint:  POST /v1/models/<owner>/<name>/predictions
              Default image model: openai/gpt-image-2
-             Fallback video model: xai/grok-imagine-video-1.5
+             Default video model: bytedance/seedance-2.0
+             Also available: -model flux-2-pro, nano-banana-2,
+                             kling-v3, minimax-h3,
+                             grok-imagine-video-1.5, upscale-pro
              Use when: you don't have direct OpenAI access yet, or you
              want to run a non-OpenAI image or video model hosted on Replicate.
              Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
              restricts -aspect-ratio to 1:1, 3:2, 2:3 only, and there's
              no -size / -output-compression passthrough.
 
-  xai        xAI native video API   [recommended for video]
+  xai        xAI native video API
              Endpoints: POST /v1/videos/generations
                         GET  /v1/videos/{request_id}   (async polling)
              Default model: grok-imagine-video
              Why prefer this: ~half the Replicate cost at 720p, plus
              text-to-video (image optional), reference images, 1080p, and
-             durations up to 15s. Image-only — no image generation.
+             durations up to 15s. Video-only — no image generation.
+             Used automatically for mp4 when no replicate token is set.
 
   Provider auto-detect (when -provider is omitted):
     1. config.provider in ~/.config/curds/config.toml
-    2. for mp4 output with no -model, xai is preferred when an xai token
-       is available (cheaper + more capable than the Replicate wrapper).
+    2. for mp4 output with no -model, config.default_video_model
+       (seedance-2 → replicate); xai is used instead when no replicate
+       token is available but an xai token is.
     3. token availability — OpenAI is preferred for images when present.
 
 TOKEN RESOLUTION (first non-empty wins)
@@ -890,6 +905,11 @@ FLAGS
                                            rounded to gpt-image-2 constraints
     -quality            {low|medium|high|auto}     default: auto
     -number-of-images   N                  1-10 (default: 1)
+    -image-resolution   VALUE              flux-2-pro: 0.5mp, 1mp, 2mp, 4mp,
+                                           match_input_image (default: 1mp);
+                                           nano-banana-2: 1k, 2k, 4k
+                                           (default: 1k). Ignored by other
+                                           models.
     -output-format      {webp|png|jpeg|mp4} default: webp, or mp4 for video
     -output-compression 0-100              openai webp/jpeg (default: 90)
     -background         {auto|opaque}      default: auto
@@ -923,15 +943,22 @@ FLAGS
                                 ignored.
     -scale N                    upscale factor, 1-10 (default: 4)
     -face-enhance               run GFPGAN face enhancement
+    -model upscale-pro          run topazlabs/image-upscale instead — a
+                                modern alternative to Real-ESRGAN. -scale
+                                accepts 2, 4, or 6 (omit for enhance-only);
+                                -face-enhance requires a -scale.
 
   Video (xai / Replicate)
     -poll-interval DURATION     status poll cadence (default: 2s)
-    -video-duration N           xai/Grok: 1-15 seconds; Seedance:
-                                -1 or 4-15 seconds (default: 5)
-    -video-resolution VALUE      Grok: 480p, 720p; xai/Seedance also 1080p
+    -video-duration N           Seedance: -1 or 4-15 seconds; Kling: 3-15;
+                                MiniMax H3: 4-15; xai/Grok: 1-15
+                                (default: 5)
+    -video-resolution VALUE      Kling: 720p, 1080p, 4k (default: 1080p);
+                                MiniMax H3: 768p, 2k (default: 768p);
+                                Grok: 480p, 720p; xai/Seedance also 1080p
                                 (default: 720p)
-    -no-audio                    disable Seedance synchronized audio
-                                (xai/Grok always generate audio)
+    -no-audio                    disable Seedance / Kling synchronized audio
+                                (MiniMax H3 and xai/Grok always emit audio)
     -strip-audio                 remove the audio track from generated
                                 videos via ffmpeg (default: true). xai/Grok
                                 always emit audio and the x.ai API has no
@@ -939,12 +966,15 @@ FLAGS
                                 clips. No-op without ffmpeg on PATH; pass
                                 -strip-audio=false to keep audio.
     -seed N                      random seed for supported Replicate models
-    -last-frame-image PATH       Seedance last frame; requires -input-image
-    -input-image PATH            xai/Grok image-to-video source (1); Seedance
-                                first frame or reference images
-    -reference-image PATH        Seedance up to 9; xai grok-imagine-video refs
-    -reference-video PATH        Seedance reference video(s), up to 3
-    -reference-audio PATH        Seedance reference audio(s), up to 3
+    -last-frame-image PATH       Seedance / Kling / MiniMax H3 last frame;
+                                requires -input-image
+    -input-image PATH            Seedance first frame or reference images;
+                                Kling / MiniMax H3 first frame (0 or 1);
+                                xai/Grok image-to-video source (1)
+    -reference-image PATH        MiniMax H3 / Seedance up to 9; xai
+                                grok-imagine-video refs
+    -reference-video PATH        MiniMax H3 / Seedance reference video(s), up to 3
+    -reference-audio PATH        MiniMax H3 / Seedance reference audio(s), up to 3
 
 ASPECT RATIOS
   Replicate gpt-image-2 accepts only:  1:1, 3:2, 2:3
@@ -954,6 +984,15 @@ ASPECT RATIOS
                                        4:3, 3:4, 3:2, 2:3
   Seedance 2.0 accepts:                 16:9, 4:3, 1:1, 3:4,
                                        9:16, 21:9, 9:21, adaptive
+  MiniMax H3 accepts:                   21:9, 16:9, 4:3, 1:1, 3:4,
+                                       9:16, adaptive
+  Kling 3.0 accepts:                    16:9, 9:16, 1:1
+  FLUX.2 [pro] accepts:                 match_input_image, 1:1, 16:9,
+                                       3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3
+                                       (or -size WxH, 256-2048 per edge)
+  Nano Banana 2 accepts:                match_input_image, 1:1, 1:4, 1:8,
+                                       2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4,
+                                       8:1, 9:16, 16:9, 21:9
 
   OpenAI gpt-image-2 constraints:
     - both edges multiples of 16
@@ -1021,9 +1060,28 @@ EXAMPLES
   # Generate and open in Preview (macOS)
   curds -open -prompt "a watercolor fox in a meadow"
 
-  # Generate video via native xAI (default for mp4 when an xai key is set):
+  # Cheap, fast image via FLUX.2 [pro] on Replicate
+  curds -model flux-2-pro -aspect-ratio 16:9 -image-resolution 2mp \
+        -prompt "a watercolor fox in a meadow" -output /tmp/fox.png
+
+  # 4K composite from two references via Nano Banana 2
+  curds -model nano-banana-2 -image-resolution 4k \
+        -input-image hero.png,logo.png \
+        -prompt "hero shot with the logo on the bottle" -output /tmp/comp.png
+
+  # Generate video with the default video model (Seedance 2.0 via Replicate):
   #   text-to-video, no input image required
   curds -prompt "a slow serene time-lapse of the milky way" -output /tmp/sky.mp4
+
+  # Kling 3.0: image-to-video with an end frame, 1080p, 10s, lip-synced audio
+  curds -model kling-v3 -input-image start.png -last-frame-image end.png \
+        -prompt "the character turns and speaks to camera" \
+        -video-resolution 1080p -video-duration 10 -output /tmp/kling.mp4
+
+  # MiniMax H3 on Replicate: image-to-video from a first frame, 2K, 10s
+  curds -model minimax-h3 -input-image still.png \
+        -prompt "a smooth product turn with soft studio camera motion" \
+        -video-resolution 2k -video-duration 10 -output /tmp/h3.mp4
 
   # Native xAI image-to-video with a reference image, 1080p, 10s
   curds -provider xai -input-image still.png \
@@ -1047,6 +1105,10 @@ EXAMPLES
   # Upscale 4x → PNG (Real-ESRGAN on Replicate)
   curds -provider replicate -model upscale \
         -input-image small.jpg -scale 4 -output big.png
+
+  # Upscale 4x with Topaz instead (better on faces and text)
+  curds -model upscale-pro -input-image small.jpg -scale 4 \
+        -face-enhance -output big.png
 
   # Upscale a portrait with face enhancement
   curds -provider replicate -model upscale -face-enhance \
@@ -1112,20 +1174,34 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 	}
 }
 
-func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string) {
+func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string, logger *logfmtLogger) {
 	switch {
 	case curds.IsVideoModel(model):
 		if !flagWasSet("output-format") {
 			opts.outputFormat = "mp4"
 		}
-		if (curds.IsGrokImagineVideoModel(model) || curds.IsXaiVideoModel(model)) && !flagWasSet("aspect-ratio") {
-			opts.aspectRatio = "auto"
+		if !flagWasSet("aspect-ratio") {
+			switch {
+			case curds.IsGrokImagineVideoModel(model), curds.IsXaiVideoModel(model):
+				opts.aspectRatio = "auto"
+			case curds.IsMinimaxVideoModel(model), curds.IsKlingVideoModel(model),
+				curds.IsSeedanceModel(model):
+				// None of these accept "auto", and 1:1 is a poor video
+				// default; landscape matches the models' own defaults.
+				opts.aspectRatio = "16:9"
+			}
 		}
 	case curds.IsSegmentationModel(model), curds.IsUpscaleModel(model):
-		// bria/remove-background returns a transparent PNG and real-esrgan
-		// returns an upscaled PNG. Forcing PNG here avoids saving with the
+		// bria/remove-background returns a transparent PNG and the upscalers
+		// return an upscaled PNG. Forcing PNG here avoids saving with the
 		// wrong extension when output.format is webp.
 		if !flagWasSet("output-format") {
+			opts.outputFormat = "png"
+		}
+	case curds.IsNanoBananaImageModel(model):
+		// Nano Banana 2 emits jpg or png only, so webp — whether from config or
+		// from an -output extension — would fail validation on every run.
+		if !flagWasSet("output-format") && opts.outputFormat == "webp" {
 			opts.outputFormat = "png"
 		}
 	default:
@@ -1135,7 +1211,27 @@ func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string
 		if path, err := ensureDefaultOutputPath(cfg, opts.outputFormat); err == nil {
 			opts.outputPath = path
 		}
+		return
 	}
+	// An explicit -output whose extension the model cannot emit (e.g.
+	// -output cut.webp for remove-bg, which only returns PNG) would otherwise
+	// save one format under another's name. Retarget the extension instead.
+	if ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(opts.outputPath), ".")); ext != "" {
+		if normalizeFormatExt(ext) != opts.outputFormat {
+			opts.outputPath = strings.TrimSuffix(opts.outputPath, filepath.Ext(opts.outputPath)) + "." + opts.outputFormat
+			if logger != nil {
+				logger.info("output.extension_retargeted", "model", model, "format", opts.outputFormat, "path", opts.outputPath)
+			}
+		}
+	}
+}
+
+// normalizeFormatExt maps a file extension onto curds' output-format spelling.
+func normalizeFormatExt(ext string) string {
+	if ext == "jpg" {
+		return "jpeg"
+	}
+	return ext
 }
 
 func ensureDefaultOutputPath(cfg *config.Config, format string) (string, error) {

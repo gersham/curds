@@ -825,6 +825,588 @@ func TestReplicateProviderSeedanceInputImages(t *testing.T) {
 	}
 }
 
+func TestRequestValidateMinimaxVideo(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:        ProviderReplicate,
+			Token:           "rtok",
+			Model:           "minimax/h3",
+			Prompt:          "a slow pan over a glacier",
+			NumImages:       1,
+			OutputFormat:    "mp4",
+			AspectRatio:     "16:9",
+			VideoResolution: "768p",
+		}
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"text-to-video", func(r *Request) {}, ""},
+		{"2k resolution", func(r *Request) { r.VideoResolution = "2k" }, ""},
+		{"uppercase resolution", func(r *Request) { r.VideoResolution = "768P" }, ""},
+		{"rejects 720p", func(r *Request) { r.VideoResolution = "720p" }, "768p or 2k"},
+		{"rejects 1080p", func(r *Request) { r.VideoResolution = "1080p" }, "768p or 2k"},
+		{"adaptive ratio", func(r *Request) { r.AspectRatio = "adaptive" }, ""},
+		{"rejects auto ratio", func(r *Request) { r.AspectRatio = "auto" }, "aspect_ratio must be"},
+		{"rejects 9:21 ratio", func(r *Request) { r.AspectRatio = "9:21" }, "aspect_ratio must be"},
+		{"duration in range", func(r *Request) { r.VideoDuration = 15 }, ""},
+		{"rejects short duration", func(r *Request) { r.VideoDuration = 3 }, "4-15"},
+		{"rejects seedance duration sentinel", func(r *Request) { r.VideoDuration = -1 }, "4-15"},
+		{"one first frame", func(r *Request) {
+			r.InputImages = []string{"https://example.com/first.png"}
+		}, ""},
+		{"rejects two input images", func(r *Request) {
+			r.InputImages = []string{"https://example.com/1.png", "https://example.com/2.png"}
+		}, "at most one -input-image"},
+		{"last frame needs first frame", func(r *Request) {
+			r.LastFrameImage = "https://example.com/last.png"
+		}, "-last-frame-image requires"},
+		{"first and last frame", func(r *Request) {
+			r.InputImages = []string{"https://example.com/first.png"}
+			r.LastFrameImage = "https://example.com/last.png"
+		}, ""},
+		{"nine reference images", func(r *Request) {
+			r.ReferenceImages = make([]string, 9)
+		}, ""},
+		{"rejects ten reference images", func(r *Request) {
+			r.ReferenceImages = make([]string, 10)
+		}, "at most 9 reference images"},
+		{"rejects four reference videos", func(r *Request) {
+			r.ReferenceVideos = make([]string, 4)
+		}, "at most 3 reference videos"},
+		{"rejects four reference audios", func(r *Request) {
+			r.ReferenceAudios = make([]string, 4)
+		}, "at most 3 reference audio"},
+		{"rejects seed", func(r *Request) { r.Seed = 7 }, "does not support -seed"},
+		{"rejects no-audio", func(r *Request) {
+			off := false
+			r.GenerateAudio = &off
+		}, "does not support -no-audio"},
+		{"rejects openai provider", func(r *Request) { r.Provider = ProviderOpenAI }, "only supported with provider replicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("got %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestMinimaxVideoDefaults(t *testing.T) {
+	r := Request{Provider: ProviderReplicate, Token: "rtok", Prompt: "hi", Model: "minimax/h3"}
+	r.applyDefaults()
+	if r.OutputFormat != "mp4" {
+		t.Errorf("OutputFormat: %q", r.OutputFormat)
+	}
+	if r.VideoResolution != "768p" {
+		t.Errorf("VideoResolution: %q", r.VideoResolution)
+	}
+	if r.AspectRatio != "16:9" {
+		t.Errorf("AspectRatio: %q", r.AspectRatio)
+	}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("defaults do not validate: %v", err)
+	}
+}
+
+func TestReplicateProviderMinimaxVideoHappyPath(t *testing.T) {
+	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("h3-video-bytes"))
+	}))
+	defer videoServer.Close()
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		if err := json.Unmarshal(body, &b); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		input, _ := b["input"].(map[string]any)
+		if got, _ := input["resolution"].(string); got != "2K" {
+			t.Errorf("resolution: %q want 2K", got)
+		}
+		if got, _ := input["ratio"].(string); got != "16:9" {
+			t.Errorf("ratio: %q", got)
+		}
+		if got, _ := input["duration"].(float64); got != 10 {
+			t.Errorf("duration: %v", got)
+		}
+		if got, _ := input["first_frame_image"].(string); got != "https://example.com/first.png" {
+			t.Errorf("first_frame_image: %q", got)
+		}
+		if got, _ := input["last_frame_image"].(string); got != "https://example.com/last.png" {
+			t.Errorf("last_frame_image: %q", got)
+		}
+		refs, _ := input["reference_image_urls"].([]any)
+		if len(refs) != 1 {
+			t.Errorf("reference_image_urls len: %d", len(refs))
+		}
+		if _, ok := input["aspect_ratio"]; ok {
+			t.Error("aspect_ratio must not be sent to minimax/h3")
+		}
+		if _, ok := input["generate_audio"]; ok {
+			t.Error("generate_audio must not be sent to minimax/h3")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "h3-1",
+			"status": "succeeded",
+			"output": videoServer.URL + "/out.mp4",
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           "minimax/h3",
+		Prompt:          "animate the still",
+		AspectRatio:     "16:9",
+		OutputFormat:    "mp4",
+		VideoDuration:   10,
+		VideoResolution: "2k",
+		InputImages:     []string{"https://example.com/first.png"},
+		LastFrameImage:  "https://example.com/last.png",
+		ReferenceImages: []string{"https://example.com/ref.png"},
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotPath != "/models/minimax/h3/predictions" {
+		t.Errorf("path: %q", gotPath)
+	}
+	if len(res.Videos) != 1 || string(res.Videos[0].Bytes) != "h3-video-bytes" {
+		t.Fatalf("videos: %+v", res.Videos)
+	}
+}
+
+func TestRequestValidateKlingVideo(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:        ProviderReplicate,
+			Token:           "rtok",
+			Model:           "kwaivgi/kling-v3-video",
+			Prompt:          "the character turns to camera",
+			NumImages:       1,
+			OutputFormat:    "mp4",
+			AspectRatio:     "16:9",
+			VideoResolution: "1080p",
+		}
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"text-to-video", func(r *Request) {}, ""},
+		{"720p standard", func(r *Request) { r.VideoResolution = "720p" }, ""},
+		{"4k mode", func(r *Request) { r.VideoResolution = "4k" }, ""},
+		{"rejects 480p", func(r *Request) { r.VideoResolution = "480p" }, "720p, 1080p, or 4k"},
+		{"rejects 4:3", func(r *Request) { r.AspectRatio = "4:3" }, "aspect_ratio must be"},
+		{"rejects auto", func(r *Request) { r.AspectRatio = "auto" }, "aspect_ratio must be"},
+		{"duration 3 ok", func(r *Request) { r.VideoDuration = 3 }, ""},
+		{"rejects duration 2", func(r *Request) { r.VideoDuration = 2 }, "3-15"},
+		{"rejects duration 16", func(r *Request) { r.VideoDuration = 16 }, "3-15"},
+		{"start frame", func(r *Request) {
+			r.InputImages = []string{"https://example.com/start.png"}
+		}, ""},
+		{"start and end frame", func(r *Request) {
+			r.InputImages = []string{"https://example.com/start.png"}
+			r.LastFrameImage = "https://example.com/end.png"
+		}, ""},
+		{"end frame alone", func(r *Request) {
+			r.LastFrameImage = "https://example.com/end.png"
+		}, "-last-frame-image requires"},
+		{"rejects two input images", func(r *Request) {
+			r.InputImages = []string{"https://example.com/1.png", "https://example.com/2.png"}
+		}, "at most one -input-image"},
+		{"rejects reference images", func(r *Request) {
+			r.ReferenceImages = []string{"https://example.com/ref.png"}
+		}, "does not support -reference-image"},
+		{"rejects seed", func(r *Request) { r.Seed = 3 }, "does not support -seed"},
+		{"rejects xai provider", func(r *Request) { r.Provider = ProviderXai }, "only supported with provider replicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("got %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestKlingModeMapping(t *testing.T) {
+	cases := map[string]string{
+		"720p": "standard", "1080p": "pro", "4k": "4k", "4K": "4k",
+		" 1080p ": "pro", "480p": "", "": "",
+	}
+	for in, want := range cases {
+		if got := KlingMode(in); got != want {
+			t.Errorf("KlingMode(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestReplicateProviderKlingVideoHappyPath(t *testing.T) {
+	videoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("kling-bytes"))
+	}))
+	defer videoServer.Close()
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		if err := json.Unmarshal(body, &b); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		input, _ := b["input"].(map[string]any)
+		if got, _ := input["mode"].(string); got != "pro" {
+			t.Errorf("mode: %q want pro", got)
+		}
+		if got, _ := input["aspect_ratio"].(string); got != "16:9" {
+			t.Errorf("aspect_ratio: %q", got)
+		}
+		if got, _ := input["duration"].(float64); got != 10 {
+			t.Errorf("duration: %v", got)
+		}
+		if got, _ := input["start_image"].(string); got != "https://example.com/start.png" {
+			t.Errorf("start_image: %q", got)
+		}
+		if got, _ := input["end_image"].(string); got != "https://example.com/end.png" {
+			t.Errorf("end_image: %q", got)
+		}
+		if got, _ := input["generate_audio"].(bool); !got {
+			t.Error("generate_audio should default to true")
+		}
+		if _, ok := input["resolution"]; ok {
+			t.Error("resolution must not be sent to kling (it uses mode)")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "kling-1",
+			"status": "succeeded",
+			"output": videoServer.URL + "/out.mp4",
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           "kwaivgi/kling-v3-video",
+		Prompt:          "the character turns to camera",
+		AspectRatio:     "16:9",
+		OutputFormat:    "mp4",
+		VideoDuration:   10,
+		VideoResolution: "1080p",
+		InputImages:     []string{"https://example.com/start.png"},
+		LastFrameImage:  "https://example.com/end.png",
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if gotPath != "/models/kwaivgi/kling-v3-video/predictions" {
+		t.Errorf("path: %q", gotPath)
+	}
+	if len(res.Videos) != 1 || string(res.Videos[0].Bytes) != "kling-bytes" {
+		t.Fatalf("videos: %+v", res.Videos)
+	}
+}
+
+func TestRequestValidateFluxImage(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:     ProviderReplicate,
+			Token:        "rtok",
+			Model:        "black-forest-labs/flux-2-pro",
+			Prompt:       "a watercolor fox",
+			NumImages:    1,
+			OutputFormat: "webp",
+			AspectRatio:  "1:1",
+		}
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"valid", func(r *Request) {}, ""},
+		{"flux ratio outside gpt-image-2 list", func(r *Request) { r.AspectRatio = "4:5" }, ""},
+		{"match_input_image", func(r *Request) { r.AspectRatio = "match_input_image" }, ""},
+		{"rejects 21:9", func(r *Request) { r.AspectRatio = "21:9" }, "aspect_ratio must be one of"},
+		{"custom size", func(r *Request) { r.Size = "1024x768" }, ""},
+		{"rejects oversized size", func(r *Request) { r.Size = "4096x4096" }, "256-2048"},
+		{"resolution 4mp", func(r *Request) { r.ImageResolution = "4mp" }, ""},
+		{"rejects 1k resolution", func(r *Request) { r.ImageResolution = "1k" }, "must be 0.5mp"},
+		{"rejects multiple images", func(r *Request) { r.NumImages = 2 }, "one image per request"},
+		{"rejects mask", func(r *Request) { r.Mask = "mask.png" }, "does not accept -mask"},
+		{"rejects reference-image flag", func(r *Request) {
+			r.ReferenceImages = []string{"ref.png"}
+		}, "via -input-image"},
+		{"input images ok", func(r *Request) {
+			r.InputImages = []string{"https://example.com/a.png", "https://example.com/b.png"}
+		}, ""},
+		{"seed ok", func(r *Request) { r.Seed = 42 }, ""},
+		{"rejects openai provider", func(r *Request) { r.Provider = ProviderOpenAI }, "only supported with provider replicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("got %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestRequestValidateNanoBananaImage(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:     ProviderReplicate,
+			Token:        "rtok",
+			Model:        "google/nano-banana-2",
+			Prompt:       "a hero shot",
+			NumImages:    1,
+			OutputFormat: "png",
+			AspectRatio:  "1:1",
+		}
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"valid", func(r *Request) {}, ""},
+		{"21:9 allowed", func(r *Request) { r.AspectRatio = "21:9" }, ""},
+		{"8:1 allowed", func(r *Request) { r.AspectRatio = "8:1" }, ""},
+		{"rejects webp", func(r *Request) { r.OutputFormat = "webp" }, "png or jpeg (no webp)"},
+		{"jpeg ok", func(r *Request) { r.OutputFormat = "jpeg" }, ""},
+		{"resolution 4k", func(r *Request) { r.ImageResolution = "4k" }, ""},
+		{"rejects 2mp resolution", func(r *Request) { r.ImageResolution = "2mp" }, "must be 1k, 2k, or 4k"},
+		{"rejects size", func(r *Request) { r.Size = "1024x1024" }, "no pixel-size input"},
+		{"rejects seed", func(r *Request) { r.Seed = 1 }, "does not support -seed"},
+		{"rejects mask", func(r *Request) { r.Mask = "m.png" }, "does not accept -mask"},
+		{"rejects multiple images", func(r *Request) { r.NumImages = 3 }, "one image per request"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("got %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+// The alt image models each have their own input field names; a mismatch is a
+// silent 422 from Replicate, so pin the exact wire shape.
+func TestReplicateAltImageModelInputs(t *testing.T) {
+	imgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png-bytes"))
+	}))
+	defer imgServer.Close()
+
+	cases := []struct {
+		name   string
+		req    Request
+		verify func(t *testing.T, input map[string]any)
+	}{
+		{
+			name: "flux megapixel resolution",
+			req: Request{
+				Model:           "black-forest-labs/flux-2-pro",
+				AspectRatio:     "16:9",
+				ImageResolution: "2mp",
+				OutputFormat:    "jpeg",
+				Seed:            7,
+				InputImages:     []string{"https://example.com/ref.png"},
+			},
+			verify: func(t *testing.T, input map[string]any) {
+				if got, _ := input["resolution"].(string); got != "2 MP" {
+					t.Errorf("resolution: %q want '2 MP'", got)
+				}
+				if got, _ := input["aspect_ratio"].(string); got != "16:9" {
+					t.Errorf("aspect_ratio: %q", got)
+				}
+				if got, _ := input["output_format"].(string); got != "jpg" {
+					t.Errorf("output_format: %q want jpg", got)
+				}
+				if got, _ := input["seed"].(float64); got != 7 {
+					t.Errorf("seed: %v", got)
+				}
+				if refs, _ := input["input_images"].([]any); len(refs) != 1 {
+					t.Errorf("input_images len: %d", len(refs))
+				}
+			},
+		},
+		{
+			name: "flux custom size",
+			req: Request{
+				Model:        "black-forest-labs/flux-2-pro",
+				AspectRatio:  "1:1",
+				Size:         "1024x768",
+				OutputFormat: "png",
+			},
+			verify: func(t *testing.T, input map[string]any) {
+				if got, _ := input["aspect_ratio"].(string); got != "custom" {
+					t.Errorf("aspect_ratio: %q want custom", got)
+				}
+				if got, _ := input["width"].(float64); got != 1024 {
+					t.Errorf("width: %v", got)
+				}
+				if got, _ := input["height"].(float64); got != 768 {
+					t.Errorf("height: %v", got)
+				}
+			},
+		},
+		{
+			name: "nano banana image_input",
+			req: Request{
+				Model:           "google/nano-banana-2",
+				AspectRatio:     "16:9",
+				ImageResolution: "4k",
+				OutputFormat:    "png",
+				InputImages:     []string{"https://example.com/a.png", "https://example.com/b.png"},
+			},
+			verify: func(t *testing.T, input map[string]any) {
+				if got, _ := input["resolution"].(string); got != "4K" {
+					t.Errorf("resolution: %q want 4K", got)
+				}
+				refs, _ := input["image_input"].([]any)
+				if len(refs) != 2 {
+					t.Errorf("image_input len: %d", len(refs))
+				}
+				if _, ok := input["input_images"]; ok {
+					t.Error("nano-banana takes image_input, not input_images")
+				}
+				if _, ok := input["quality"]; ok {
+					t.Error("gpt-image-2 fields must not leak into nano-banana input")
+				}
+			},
+		},
+		{
+			name: "topaz upscale factor",
+			req: Request{
+				Model:        "topazlabs/image-upscale",
+				OutputFormat: "png",
+				Scale:        4,
+				FaceEnhance:  true,
+				InputImages:  []string{"https://example.com/small.png"},
+			},
+			verify: func(t *testing.T, input map[string]any) {
+				if got, _ := input["upscale_factor"].(string); got != "4x" {
+					t.Errorf("upscale_factor: %q want 4x", got)
+				}
+				if got, _ := input["face_enhancement"].(bool); !got {
+					t.Error("face_enhancement should be true")
+				}
+				if _, ok := input["scale"]; ok {
+					t.Error("real-esrgan's numeric scale must not be sent to topaz")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var b map[string]any
+				if err := json.Unmarshal(body, &b); err != nil {
+					t.Fatalf("unmarshal body: %v", err)
+				}
+				input, _ := b["input"].(map[string]any)
+				tc.verify(t, input)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":     "alt-1",
+					"status": "succeeded",
+					"output": imgServer.URL + "/out.png",
+				})
+			}))
+			defer srv.Close()
+
+			c := &Client{
+				HTTPClient: srv.Client(),
+				Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+			}
+			req := tc.req
+			req.Provider = ProviderReplicate
+			req.Token = "rtok"
+			if req.Prompt == "" {
+				req.Prompt = "a watercolor fox"
+			}
+			req.PollInterval = 10 * time.Millisecond
+			if _, err := c.Generate(context.Background(), &req); err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+		})
+	}
+}
+
+func TestTopazUpscaleFactor(t *testing.T) {
+	cases := map[float64]string{0: "None", 2: "2x", 4: "4x", 6: "6x", 3: "", 8: "", 1: ""}
+	for in, want := range cases {
+		if got := TopazUpscaleFactor(in); got != want {
+			t.Errorf("TopazUpscaleFactor(%g) = %q want %q", in, got, want)
+		}
+	}
+}
+
 func TestIsVideoModel(t *testing.T) {
 	cases := map[string]bool{
 		"xai/grok-imagine-video-1.5":          true,
@@ -837,6 +1419,13 @@ func TestIsVideoModel(t *testing.T) {
 		"xai/grok-imagine-video-1.5-evil/foo": false,
 		"grok-imagine-video":                  true,
 		"Grok-Imagine-Video":                  true,
+		"minimax/h3":                          true,
+		"kwaivgi/kling-v3-video":              true,
+		"kwaivgi/kling-v3-video:v1":           true,
+		"kwaivgi/kling-v3-video-evil/x":       false,
+		"MiniMax/H3":                          true,
+		"minimax/h3:abc123":                   true,
+		"minimax/h3-evil/foo":                 false,
 		"":                                    false,
 	}
 	for in, want := range cases {

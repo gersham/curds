@@ -6,10 +6,10 @@ project-local context. Keep it short and load-bearing.
 ## What this repo is
 
 A Go CLI + library for generating images via OpenAI's gpt-image-2 (direct),
-plus images/videos via Replicate-hosted models such as Grok Imagine Video 1.5
-and Seedance 2.0, plus background removal via Replicate's
-`bria/remove-background` (segmentation), plus image upscaling via Replicate's
-`nightmareai/real-esrgan` (super-resolution).
+plus images/videos via Replicate-hosted models (FLUX.2 [pro], Nano Banana 2,
+Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), plus background
+removal via `bria/remove-background` (segmentation), plus image upscaling via
+`nightmareai/real-esrgan` and `topazlabs/image-upscale` (super-resolution).
 Module path: `github.com/gersham/curds`.
 
 ## Layout
@@ -62,18 +62,36 @@ file; if you add a provider, model, or flag that changes the happy path, update
   rules. User-supplied `-size WxH` is rounded by `RoundSize`. If you expand
   the ratio map, the new entries must satisfy: both edges multiples of 16,
   edges ≤ 3840, ratio ≤ 3:1, total pixels in [655 360, 8 294 400].
-- **Video support is Replicate-only for now.** `grok-imagine-video-1.5` maps
-  to `xai/grok-imagine-video-1.5` and is the default video model when output is
-  MP4 and no `-model` is supplied. `seedance-2` maps to
-  `bytedance/seedance-2.0` and stays selectable. Both emit `Result.Videos` and
-  save MP4 output.
+- **Video models.** `seedance-2` (`bytedance/seedance-2.0`) is the default
+  video model when output is MP4 and no `-model` is supplied; the CLI falls
+  back to native xAI `grok-imagine-video` only when no replicate token is
+  available. `kling-v3` (`kwaivgi/kling-v3-video`), `minimax-h3`
+  (`minimax/h3`) and `grok-imagine-video-1.5` are selectable. All emit
+  `Result.Videos` and save MP4 output.
+  Kling maps `-video-resolution` onto its `mode` enum via `KlingMode`
+  (720p=standard, 1080p=pro, 4k) and names frames `start_image`/`end_image`.
+  MiniMax H3 has its own field names (`first_frame_image`, `last_frame_image`,
+  `reference_image_urls`/`_video_`/`_audio_`, `ratio`) and its own enums —
+  resolution `768P`/`2K` (mapped from `768p`/`2k` by `MinimaxVideoResolution`),
+  ratio with `adaptive` and no `auto`, duration 4-15s. No seed, no audio toggle.
   For Grok Imagine Video, exactly one `InputImages` entry is sent as `image`.
   For Seedance, one `InputImages` entry is sent as `image` (first frame);
   multiple `InputImages` entries are sent as `reference_images`.
   Keep model-specific video fields on `Request` and inside
   `ReplicateProvider`; don't add video HTTP calls to the CLI or TUI.
+- **Alt image models.** `flux-2-pro` and `nano-banana-2` do NOT share the
+  gpt-image-2 wrapper's input shape — they get their own builders and
+  validators. FLUX sizes by `resolution` (megapixels) or `width`/`height` with
+  `aspect_ratio: "custom"`; Nano Banana takes `image_input` (not
+  `input_images`) and 1K/2K/4K. Both map curds' `jpeg` to `jpg` via
+  `replicateImageFormat`, take one image per prediction, and ignore
+  quality/background/moderation. `Request.ImageResolution` carries
+  `-image-resolution` for both.
 - **Default output path:** `<config.output.directory>/<unix_milli>.<format>`.
   Changing the default path → update `config.DefaultTOML` and the README.
+  When a model can only emit one format (segmentation, upscale, Nano Banana),
+  `applyModelOutputDefaults` also retargets an explicit `-output` extension
+  rather than writing PNG bytes into a `.webp` name.
 - **No emojis, no chatty trailing summaries** in user-facing CLI output. Logs
   are the audit trail; stdout is just the saved file path(s).
 - **One canonical name per flag.** No `-p`/`-prompt` aliases. Long forms
@@ -115,7 +133,9 @@ openai_name = "..."
 replicate_name = "..."
 ```
 
-The CLI's `-model <key>` looks the value up via `config.ResolveModel`.
+The CLI's `-model <key>` looks the value up via `config.ResolveModel`. Add the
+same entry to `config.builtinModels` so config files written before the model
+existed still resolve the key instead of passing it through raw.
 
 ## Things to avoid
 

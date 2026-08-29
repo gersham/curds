@@ -29,10 +29,11 @@ provider = ""
 # Default model key (looked up in [models.<key>] below).
 default_model = "gpt-image-2"
 
-# Fallback video model key when output is mp4 and -model is omitted. When an
-# xai token is available, the native "grok-imagine-video" (provider xai) is
-# preferred automatically; otherwise this Replicate-hosted model is used.
-default_video_model = "grok-imagine-video-1.5"
+# Video model key used when output is mp4 and -model is omitted. Seedance 2.0
+# leads on reference handling, multi-scene continuity and native audio. When no
+# replicate token is available but an xai token is, curds falls back to the
+# native "grok-imagine-video" (provider xai).
+default_video_model = "seedance-2"
 
 # Output settings.
 [output]
@@ -63,6 +64,24 @@ number_of_images = 1
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
 
+# FLUX.2 [pro] via Replicate (-model flux-2-pro). Fast and cheap, with up to
+# four reference images via -input-image. Sizes by -image-resolution
+# (0.5mp/1mp/2mp/4mp) or -size WxH (256-2048 per edge).
+[models.flux-2-pro]
+replicate_name = "black-forest-labs/flux-2-pro"
+
+# Google Nano Banana 2 via Replicate (-model nano-banana-2). Strong character
+# consistency and multi-image compositing; -image-resolution 1k/2k/4k.
+# Emits png or jpeg only.
+[models.nano-banana-2]
+replicate_name = "google/nano-banana-2"
+
+# MiniMax H3 via Replicate (-model minimax-h3). Multimodal: text-to-video,
+# first/last-frame image-to-video, and reference images/videos/audio.
+# 4-15s at 768P or 2K.
+[models.minimax-h3]
+replicate_name = "minimax/h3"
+
 # Native xAI Grok Imagine Video (provider xai). Supports text-to-video
 # (image optional), reference images, 1080p, and durations up to 15s.
 [models.grok-imagine-video]
@@ -72,8 +91,17 @@ xai_name = "grok-imagine-video"
 [models.grok-imagine-video-1.5]
 replicate_name = "xai/grok-imagine-video-1.5"
 
+# Seedance 2.0 via Replicate. Default video model: text-to-video, first/last
+# frame, up to 9 reference images, 3 reference videos, 3 reference audio clips,
+# and native synchronized audio.
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
+
+# Kling Video 3.0 via Replicate (-model kling-v3). Text-to-video and
+# image-to-video with start/end frames, native audio with lip-synced dialogue.
+# -video-resolution maps to its mode: 720p=standard, 1080p=pro, 4k=4k.
+[models.kling-v3]
+replicate_name = "kwaivgi/kling-v3-video"
 
 # Segmentation / background removal. Replicate-only. Returns a transparent
 # PNG matching the input image's dimensions. Use with -input-image.
@@ -84,7 +112,29 @@ replicate_name = "bria/remove-background"
 # Use with -input-image, -scale, and optional -face-enhance.
 [models.upscale]
 replicate_name = "nightmareai/real-esrgan"
+
+# Topaz Labs upscaler (-model upscale-pro). Modern alternative to Real-ESRGAN;
+# -scale accepts 2, 4, or 6 (omit for enhance-only).
+[models.upscale-pro]
+replicate_name = "topazlabs/image-upscale"
 `
+
+// builtinModels are the model keys curds ships with. They are merged into a
+// parsed config for any key the file does not define, keeping older config
+// files working as new models land. Keep in sync with DefaultTOML.
+var builtinModels = map[string]ModelConfig{
+	"gpt-image-2":            {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
+	"flux-2-pro":             {ReplicateName: "black-forest-labs/flux-2-pro"},
+	"nano-banana-2":          {ReplicateName: "google/nano-banana-2"},
+	"minimax-h3":             {ReplicateName: "minimax/h3"},
+	"kling-v3":               {ReplicateName: "kwaivgi/kling-v3-video"},
+	"upscale-pro":            {ReplicateName: "topazlabs/image-upscale"},
+	"grok-imagine-video":     {XaiName: "grok-imagine-video"},
+	"grok-imagine-video-1.5": {ReplicateName: "xai/grok-imagine-video-1.5"},
+	"seedance-2":             {ReplicateName: "bytedance/seedance-2.0"},
+	"remove-bg":              {ReplicateName: "bria/remove-background"},
+	"upscale":                {ReplicateName: "nightmareai/real-esrgan"},
+}
 
 // Config is the parsed config file.
 type Config struct {
@@ -169,7 +219,7 @@ func (c *Config) applyZeroDefaults() {
 		c.DefaultModel = "gpt-image-2"
 	}
 	if c.DefaultVideoModel == "" {
-		c.DefaultVideoModel = "grok-imagine-video-1.5"
+		c.DefaultVideoModel = "seedance-2"
 	}
 	if c.Output.Directory == "" {
 		c.Output.Directory = "~/Desktop/curds"
@@ -197,6 +247,14 @@ func (c *Config) applyZeroDefaults() {
 	}
 	if c.Models == nil {
 		c.Models = map[string]ModelConfig{}
+	}
+	// Backfill model keys added after the user's config file was written, so a
+	// new default (or a newly documented -model key) resolves instead of being
+	// passed through to the provider as a raw model name. User entries win.
+	for key, m := range builtinModels {
+		if _, ok := c.Models[key]; !ok {
+			c.Models[key] = m
+		}
 	}
 	if _, ok := c.Models["gpt-image-2"]; !ok {
 		c.Models["gpt-image-2"] = ModelConfig{

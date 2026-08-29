@@ -26,8 +26,10 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
 - Provider: `-provider openai` for image generation and edits (`gpt-image-2` —
   lower latency and cost, more size options, no polling). For ordinary `.mp4`
   video omit `-provider`/`-model`; curds defaults to Replicate
-  `xai/grok-imagine-video-1.5`. Use `-provider replicate` only for Seedance
-  (when the user asks for it), `remove-bg`, `upscale`, or when OpenAI access is missing.
+  `bytedance/seedance-2.0`. Use `-model` for the Replicate alternatives —
+  `flux-2-pro` / `nano-banana-2` (images), `kling-v3` / `minimax-h3` (video),
+  `remove-bg`, `upscale`, `upscale-pro` — when the user asks for them or
+  OpenAI access is missing.
 
 ## Commands
 
@@ -38,14 +40,21 @@ curds -no-tui -provider openai -aspect-ratio 16:9 -quality high -prompt "$PROMPT
 # Edit / compose with reference images (comma-separated or repeated, max 16)
 curds -no-tui -provider openai -input-image ref1.png,ref2.png -prompt "$PROMPT" -output "$OUT"
 
-# Video (default model; seed from a still with -input-image)
-curds -no-tui -input-image still.webp -prompt "$PROMPT" -aspect-ratio 1:1 -video-duration 4 -video-resolution 720p -output "$OUT.mp4"
+# Video (default model Seedance 2.0; seed from a still with -input-image)
+curds -no-tui -input-image still.webp -prompt "$PROMPT" -aspect-ratio 16:9 -video-duration 5 -video-resolution 720p -output "$OUT.mp4"
+
+# Cheap/fast image alternative (FLUX.2 [pro]) or 4K composite (Nano Banana 2)
+curds -no-tui -model flux-2-pro -aspect-ratio 16:9 -image-resolution 2mp -prompt "$PROMPT" -output "$OUT.png"
+curds -no-tui -model nano-banana-2 -image-resolution 4k -input-image a.png,b.png -prompt "$PROMPT" -output "$OUT.png"
 
 # Background removal (transparent PNG cutout)
 curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
 
 # Upscale / super-resolution (PNG; -scale 1-10, default 4; add -face-enhance for portraits)
 curds -no-tui -provider replicate -model upscale -input-image small.jpg -scale 4 -output big.png
+
+# Better upscale for faces and text (Topaz; -scale 2, 4, or 6)
+curds -no-tui -model upscale-pro -input-image small.jpg -scale 4 -output big.png
 ```
 
 ## Verify and report

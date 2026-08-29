@@ -31,15 +31,47 @@ Transparent image generation is not supported by `gpt-image-2`; use
 curds -no-tui -provider openai -input-image source.png -mask mask.png -prompt "$PROMPT" -output "$OUT"
 ```
 
-## Grok video (default mp4 model)
+## Seedance 2.0 video (default mp4 model)
 
-Default Replicate video model: `xai/grok-imagine-video-1.5`.
+Default Replicate video model: `bytedance/seedance-2.0` (model key
+`seedance-2`). Text-to-video, first/last frame, or reference-guided.
 
-- `-video-duration`: `1`–`15` seconds.
-- `-video-resolution`: `480p` or `720p`.
-- `-aspect-ratio`: `auto`, `16:9`, `4:3`, `1:1`, `9:16`, `3:4`, `3:2`, `2:3`.
-- Audio is stripped automatically. Do not force Seedance for ordinary mp4
+- `-video-duration`: `-1` (intelligent) or `4`–`15` seconds (default `5`).
+- `-video-resolution`: `480p`, `720p`, or `1080p` (default `720p`).
+- `-aspect-ratio`: `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `9:21`,
+  `adaptive` (default `16:9`).
+- `-input-image`: one entry is the first frame; several become references.
+- On request only: `-last-frame-image`, `-reference-image` (≤9),
+  `-reference-video` (≤3), `-reference-audio` (≤3), `-no-audio`, `-seed`.
+- Audio is stripped automatically. Do not switch models for ordinary mp4
   generation.
+
+## Kling 3.0 video (only when the user asks for it)
+
+Model key `kling-v3` (`kwaivgi/kling-v3-video`). Text-to-video or
+image-to-video with start/end frames, native audio with lip-synced dialogue.
+
+- `-video-duration`: `3`–`15` seconds (default `5`).
+- `-video-resolution`: `720p`, `1080p`, `4k` (default `1080p`) — maps to
+  Kling's standard/pro/4k mode.
+- `-aspect-ratio`: `16:9`, `9:16`, `1:1` (default `16:9`).
+- `-input-image`: 0 or 1 start frame; `-last-frame-image` needs one.
+- No reference images/videos/audio and no `-seed`; use `seedance-2` for those.
+
+## MiniMax H3 video (only when the user asks for it)
+
+Model key `minimax-h3` (`minimax/h3`), Replicate. Text-to-video, or
+first/last-frame image-to-video, or reference-guided.
+
+- `-video-duration`: `4`–`15` seconds (default `5`).
+- `-video-resolution`: `768p` or `2k` (default `768p`).
+- `-aspect-ratio`: `adaptive`, `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`
+  (default `16:9`; no `auto`).
+- `-input-image`: 0 or 1, used as the first frame. `-last-frame-image` requires
+  one `-input-image`.
+- On request only: `-reference-image` (≤9), `-reference-video` (≤3),
+  `-reference-audio` (≤3).
+- No `-seed` and no `-no-audio`. Audio is stripped automatically.
 
 ## Seedance video (only when the user asks for it)
 
@@ -52,11 +84,33 @@ curds -no-tui -provider replicate -model seedance-2 -aspect-ratio 16:9 -video-du
 - Seedance-specific flags, only on request: `-no-audio`, `-last-frame-image`,
   `-reference-image`, `-reference-video`, `-reference-audio`.
 
+## Alternative image models (only when the user asks, or for cost)
+
+`gpt-image-2` via `-provider openai` stays the default. Two Replicate models
+cover what it does poorly; both take references via `-input-image`, produce one
+image per request, ignore `-quality`/`-background`/`-moderation`, and reject
+`-mask`.
+
+```bash
+curds -no-tui -model flux-2-pro -aspect-ratio 16:9 -image-resolution 2mp -prompt "$PROMPT" -output "$OUT.png"
+curds -no-tui -model nano-banana-2 -image-resolution 4k -input-image a.png,b.png -prompt "$PROMPT" -output "$OUT.png"
+```
+
+- `flux-2-pro`: cheap and fast (~$0.015/gen). `-image-resolution`
+  `0.5mp|1mp|2mp|4mp|match_input_image`, or `-size WxH` with edges 256-2048.
+  Ratios: `match_input_image`, `1:1`, `16:9`, `3:2`, `2:3`, `4:5`, `5:4`,
+  `9:16`, `3:4`, `4:3`. Supports `-seed`.
+- `nano-banana-2`: character consistency and multi-image compositing, cheap 4K.
+  `-image-resolution` `1k|2k|4k`. PNG or JPEG only (no webp), no `-seed`,
+  no `-size`.
+
 ## Background removal and upscaling (Replicate)
 
 Both take exactly one `-input-image` (file path, `http(s)` URL, or `data:`
 URL), no `-prompt`, and force PNG output; `-aspect-ratio` and `-size` are
-ignored.
+ignored. For upscaling prefer `-model upscale-pro`
+(`topazlabs/image-upscale`, `-scale` 2/4/6) — it beats `upscale`
+(`nightmareai/real-esrgan`, `-scale` 1-10) on faces and text.
 
 ```bash
 # Background removal → transparent PNG (bria/remove-background)

@@ -96,6 +96,12 @@ func buildReplicateInput(req *Request) (map[string]any, error) {
 	if IsUpscaleModel(req.Model) {
 		return buildReplicateUpscaleInput(req)
 	}
+	if IsFluxImageModel(req.Model) {
+		return buildReplicateFluxInput(req)
+	}
+	if IsNanoBananaImageModel(req.Model) {
+		return buildReplicateNanoBananaInput(req)
+	}
 	input := map[string]any{
 		"prompt":           req.Prompt,
 		"aspect_ratio":     req.AspectRatio,
@@ -116,6 +122,72 @@ func buildReplicateInput(req *Request) (map[string]any, error) {
 		input["input_images"] = urls
 	}
 	return input, nil
+}
+
+// buildReplicateFluxInput builds the input for black-forest-labs/flux-2-pro.
+// FLUX sizes output either by megapixel target (`resolution`) or by explicit
+// `width`/`height` with aspect_ratio "custom". It takes reference images in
+// `input_images` and has no quality/background/moderation knobs.
+func buildReplicateFluxInput(req *Request) (map[string]any, error) {
+	input := map[string]any{
+		"prompt":        req.Prompt,
+		"output_format": replicateImageFormat(req.OutputFormat),
+	}
+	if w, h, ok := ParseSize(req.Size); ok {
+		input["aspect_ratio"] = "custom"
+		input["width"] = w
+		input["height"] = h
+	} else {
+		input["aspect_ratio"] = req.AspectRatio
+	}
+	if res := FluxImageResolution(req.ImageResolution); res != "" {
+		input["resolution"] = res
+	}
+	if req.OutputCompression > 0 {
+		input["output_quality"] = req.OutputCompression
+	}
+	if req.Seed != 0 {
+		input["seed"] = req.Seed
+	}
+	if len(req.InputImages) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare input images: %w", err)
+		}
+		input["input_images"] = urls
+	}
+	return input, nil
+}
+
+// buildReplicateNanoBananaInput builds the input for google/nano-banana-2. It
+// names its reference array `image_input`, sizes output with 1K/2K/4K, and
+// emits jpg or png only.
+func buildReplicateNanoBananaInput(req *Request) (map[string]any, error) {
+	input := map[string]any{
+		"prompt":        req.Prompt,
+		"aspect_ratio":  req.AspectRatio,
+		"output_format": replicateImageFormat(req.OutputFormat),
+	}
+	if res := NanoBananaImageResolution(req.ImageResolution); res != "" {
+		input["resolution"] = res
+	}
+	if len(req.InputImages) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare input images: %w", err)
+		}
+		input["image_input"] = urls
+	}
+	return input, nil
+}
+
+// replicateImageFormat maps curds' output format onto the spelling used by
+// FLUX.2 and Nano Banana 2, which say "jpg" where curds says "jpeg".
+func replicateImageFormat(format string) string {
+	if format == "jpeg" {
+		return "jpg"
+	}
+	return format
 }
 
 // buildReplicateSegmentationInput builds the input for bria/remove-background
@@ -140,6 +212,17 @@ func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare upscale input image: %w", err)
 	}
+	if IsTopazUpscaleModel(req.Model) {
+		input := map[string]any{
+			"image":          urls[0],
+			"upscale_factor": TopazUpscaleFactor(req.Scale),
+			"output_format":  "png",
+		}
+		if req.FaceEnhance {
+			input["face_enhancement"] = true
+		}
+		return input, nil
+	}
 	scale := req.Scale
 	if scale == 0 {
 		scale = DefaultUpscaleScale
@@ -155,10 +238,103 @@ func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
 }
 
 func buildReplicateVideoInput(req *Request) (map[string]any, error) {
-	if IsGrokImagineVideoModel(req.Model) {
+	switch {
+	case IsGrokImagineVideoModel(req.Model):
 		return buildReplicateGrokImagineVideoInput(req)
+	case IsMinimaxVideoModel(req.Model):
+		return buildReplicateMinimaxVideoInput(req)
+	case IsKlingVideoModel(req.Model):
+		return buildReplicateKlingVideoInput(req)
 	}
 	return buildReplicateSeedanceVideoInput(req)
+}
+
+// buildReplicateKlingVideoInput builds the input for kwaivgi/kling-v3-video.
+// Kling names its frames `start_image` / `end_image` and expresses resolution
+// as a `mode` (standard = 720p, pro = 1080p, 4k). Audio is opt-in upstream, so
+// curds sends generate_audio=true unless -no-audio was passed, matching how it
+// treats Seedance.
+func buildReplicateKlingVideoInput(req *Request) (map[string]any, error) {
+	input := map[string]any{
+		"prompt":         req.Prompt,
+		"mode":           KlingMode(req.VideoResolution),
+		"aspect_ratio":   req.AspectRatio,
+		"duration":       req.VideoDuration,
+		"generate_audio": true,
+	}
+	if req.VideoDuration == 0 {
+		input["duration"] = 5
+	}
+	if req.GenerateAudio != nil {
+		input["generate_audio"] = *req.GenerateAudio
+	}
+	if len(req.InputImages) == 1 {
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare start image: %w", err)
+		}
+		input["start_image"] = urls[0]
+	}
+	if req.LastFrameImage != "" {
+		urls, err := encodeMediaAsDataURLs([]string{req.LastFrameImage})
+		if err != nil {
+			return nil, fmt.Errorf("prepare end image: %w", err)
+		}
+		input["end_image"] = urls[0]
+	}
+	return input, nil
+}
+
+// buildReplicateMinimaxVideoInput builds the input for minimax/h3. H3 names its
+// fields differently from Seedance: `first_frame_image` / `last_frame_image`
+// instead of `image`, `reference_*_urls` instead of `reference_*`, and `ratio`
+// instead of `aspect_ratio`. It has no seed or audio toggle.
+func buildReplicateMinimaxVideoInput(req *Request) (map[string]any, error) {
+	input := map[string]any{
+		"prompt":     req.Prompt,
+		"duration":   req.VideoDuration,
+		"resolution": MinimaxVideoResolution(req.VideoResolution),
+		"ratio":      req.AspectRatio,
+	}
+	if req.VideoDuration == 0 {
+		input["duration"] = 5
+	}
+	if len(req.InputImages) == 1 {
+		urls, err := encodeMediaAsDataURLs(req.InputImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare first frame image: %w", err)
+		}
+		input["first_frame_image"] = urls[0]
+	}
+	if req.LastFrameImage != "" {
+		urls, err := encodeMediaAsDataURLs([]string{req.LastFrameImage})
+		if err != nil {
+			return nil, fmt.Errorf("prepare last frame image: %w", err)
+		}
+		input["last_frame_image"] = urls[0]
+	}
+	if len(req.ReferenceImages) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.ReferenceImages)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference images: %w", err)
+		}
+		input["reference_image_urls"] = urls
+	}
+	if len(req.ReferenceVideos) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.ReferenceVideos)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference videos: %w", err)
+		}
+		input["reference_video_urls"] = urls
+	}
+	if len(req.ReferenceAudios) > 0 {
+		urls, err := encodeMediaAsDataURLs(req.ReferenceAudios)
+		if err != nil {
+			return nil, fmt.Errorf("prepare reference audios: %w", err)
+		}
+		input["reference_audio_urls"] = urls
+	}
+	return input, nil
 }
 
 func buildReplicateGrokImagineVideoInput(req *Request) (map[string]any, error) {

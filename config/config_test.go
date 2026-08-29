@@ -21,7 +21,7 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.DefaultModel != "gpt-image-2" {
 		t.Errorf("DefaultModel: %q", cfg.DefaultModel)
 	}
-	if cfg.DefaultVideoModel != "grok-imagine-video-1.5" {
+	if cfg.DefaultVideoModel != "seedance-2" {
 		t.Errorf("DefaultVideoModel: %q", cfg.DefaultVideoModel)
 	}
 	if cfg.Output.Directory == "" {
@@ -220,6 +220,42 @@ func TestResolveModel(t *testing.T) {
 	}
 	if got := ResolveModel(cfg, cfg.DefaultVideoModel, "replicate"); got != "xai/grok-imagine-video-1.5" {
 		t.Errorf("default video: %q", got)
+	}
+}
+
+// A config file written before minimax-h3 existed must still resolve the key,
+// otherwise -model minimax-h3 reaches Replicate as a raw name.
+func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
+	cfg := &Config{
+		Models: map[string]ModelConfig{
+			"gpt-image-2": {OpenAIName: "custom-user-value"},
+		},
+	}
+	cfg.applyZeroDefaults()
+	if got := ResolveModel(cfg, "minimax-h3", "replicate"); got != "minimax/h3" {
+		t.Errorf("backfilled minimax-h3: %q", got)
+	}
+	if got := ResolveModel(cfg, "kling-v3", "replicate"); got != "kwaivgi/kling-v3-video" {
+		t.Errorf("backfilled kling-v3: %q", got)
+	}
+	if got := ResolveModel(cfg, "flux-2-pro", "replicate"); got != "black-forest-labs/flux-2-pro" {
+		t.Errorf("backfilled flux-2-pro: %q", got)
+	}
+	if got := ResolveModel(cfg, "nano-banana-2", "replicate"); got != "google/nano-banana-2" {
+		t.Errorf("backfilled nano-banana-2: %q", got)
+	}
+	if got := ResolveModel(cfg, "upscale-pro", "replicate"); got != "topazlabs/image-upscale" {
+		t.Errorf("backfilled upscale-pro: %q", got)
+	}
+	if got := ResolveModel(cfg, cfg.DefaultVideoModel, "replicate"); got != "bytedance/seedance-2.0" {
+		t.Errorf("backfilled default video: %q", got)
+	}
+	if got := ResolveModel(cfg, "upscale", "replicate"); got != "nightmareai/real-esrgan" {
+		t.Errorf("backfilled upscale: %q", got)
+	}
+	// User entries win over the builtin table.
+	if got := ResolveModel(cfg, "gpt-image-2", "openai"); got != "custom-user-value" {
+		t.Errorf("user override lost: %q", got)
 	}
 }
 

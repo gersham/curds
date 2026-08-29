@@ -29,7 +29,42 @@ const (
 
 	DefaultReplicateModel = "openai/gpt-image-2"
 	DefaultOpenAIModel    = "gpt-image-2"
-	DefaultVideoModel     = "xai/grok-imagine-video-1.5"
+
+	// GrokImagineVideoModel is the Replicate-hosted Grok Imagine Video 1.5
+	// wrapper (image-to-video only) and the default Replicate video model.
+	GrokImagineVideoModel = "xai/grok-imagine-video-1.5"
+
+	// DefaultVideoModel is the Replicate-hosted video model used when output is
+	// MP4 and no model is supplied. Seedance 2.0 leads on reference handling,
+	// multi-scene continuity, and native audio.
+	DefaultVideoModel = SeedanceVideoModel
+
+	// MinimaxVideoModel is MiniMax H3 on Replicate: multimodal text-to-video,
+	// first/last-frame image-to-video, and reference images/videos/audio.
+	// Selectable via -model minimax-h3; not a default.
+	MinimaxVideoModel = "minimax/h3"
+
+	// SeedanceVideoModel is ByteDance Seedance 2.0 on Replicate and the default
+	// video model: text-to-video, first/last frame, reference images/videos/
+	// audio, and native synchronized audio in the same pass.
+	SeedanceVideoModel = "bytedance/seedance-2.0"
+
+	// KlingVideoModel is Kling Video 3.0 on Replicate: text-to-video and
+	// image-to-video with start/end frames, native audio with lip-synced
+	// dialogue, and standard (720p) / pro (1080p) / 4k modes.
+	KlingVideoModel = "kwaivgi/kling-v3-video"
+
+	// FluxImageModel is FLUX.2 [pro] on Replicate: fast, cheap image generation
+	// with reference-image control. Uses megapixel resolutions, not sizes.
+	FluxImageModel = "black-forest-labs/flux-2-pro"
+
+	// NanoBananaImageModel is Google Nano Banana 2 on Replicate: strong
+	// character consistency and multi-image compositing, 1K/2K/4K output.
+	NanoBananaImageModel = "google/nano-banana-2"
+
+	// TopazUpscaleModel is Topaz Labs' image upscaler on Replicate: a modern
+	// alternative to Real-ESRGAN with 2x/4x/6x factors and face enhancement.
+	TopazUpscaleModel = "topazlabs/image-upscale"
 
 	// DefaultXaiVideoModel is xAI's native Grok Imagine Video model id, used
 	// when routing video through the x.ai API directly instead of Replicate.
@@ -105,6 +140,7 @@ type Request struct {
 	ReferenceImages   []string
 	ReferenceVideos   []string
 	ReferenceAudios   []string
+	ImageResolution   string  // flux: 0.5mp/1mp/2mp/4mp; nano-banana: 1k/2k/4k
 	VideoDuration     int     // seconds; model-specific, 0 = default
 	VideoResolution   string  // 480p, 720p, 1080p; empty = default
 	GenerateAudio     *bool   // nil = provider default
@@ -205,9 +241,13 @@ func (r *Request) applyDefaults() {
 		r.NumImages = 1
 	}
 	if r.AspectRatio == "" && r.Size == "" {
-		if IsGrokImagineVideoModel(r.Model) || IsXaiVideoModel(r.Model) {
+		switch {
+		case IsGrokImagineVideoModel(r.Model), IsXaiVideoModel(r.Model):
 			r.AspectRatio = "auto"
-		} else {
+		case IsMinimaxVideoModel(r.Model), IsKlingVideoModel(r.Model):
+			// Neither accepts "auto", and 1:1 is a poor video default.
+			r.AspectRatio = "16:9"
+		default:
 			r.AspectRatio = "1:1"
 		}
 	}
@@ -220,12 +260,24 @@ func (r *Request) applyDefaults() {
 			r.OutputFormat = "mp4"
 		case IsSegmentationModel(r.Model), IsUpscaleModel(r.Model):
 			r.OutputFormat = "png"
+		case IsNanoBananaImageModel(r.Model):
+			// Nano Banana 2 emits jpg or png only — no webp.
+			r.OutputFormat = "png"
 		default:
 			r.OutputFormat = "webp"
 		}
 	}
 	if IsVideoModel(r.Model) && r.VideoResolution == "" {
-		r.VideoResolution = "720p"
+		switch {
+		case IsMinimaxVideoModel(r.Model):
+			// H3's vocabulary is 768P / 2K; default to the cheaper tier.
+			r.VideoResolution = "768p"
+		case IsKlingVideoModel(r.Model):
+			// Matches Kling's own default mode ("pro").
+			r.VideoResolution = "1080p"
+		default:
+			r.VideoResolution = "720p"
+		}
 	}
 	if r.Background == "" {
 		r.Background = "auto"
@@ -276,6 +328,14 @@ func (r *Request) Validate() error {
 		if err := r.validateUpscale(); err != nil {
 			return err
 		}
+	case IsFluxImageModel(r.Model):
+		if err := r.validateFluxImage(); err != nil {
+			return err
+		}
+	case IsNanoBananaImageModel(r.Model):
+		if err := r.validateNanoBananaImage(); err != nil {
+			return err
+		}
 	default:
 		switch r.OutputFormat {
 		case "webp", "png", "jpeg":
@@ -283,7 +343,11 @@ func (r *Request) Validate() error {
 			return fmt.Errorf("output_format must be webp, png, or jpeg, got %q", r.OutputFormat)
 		}
 	}
-	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsSegmentationModel(r.Model) && !IsUpscaleModel(r.Model) && r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
+	// The gpt-image-2 wrapper on Replicate is the only model with the narrow
+	// 1:1/3:2/2:3 ratio list; models with their own ratio enums validate above.
+	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsSegmentationModel(r.Model) &&
+		!IsUpscaleModel(r.Model) && !IsFluxImageModel(r.Model) && !IsNanoBananaImageModel(r.Model) &&
+		r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
 		return fmt.Errorf("replicate only supports 1:1, 3:2, 2:3 aspect ratios; got %q", r.AspectRatio)
 	}
 	if r.Provider == ProviderOpenAI && r.Size == "" && r.AspectRatio != "" && r.AspectRatio != "auto" {
@@ -330,6 +394,16 @@ func (r *Request) validateVideo() error {
 			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
 		}
 		return r.validateSeedanceVideo()
+	case IsMinimaxVideoModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		return r.validateMinimaxVideo()
+	case IsKlingVideoModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		return r.validateKlingVideo()
 	default:
 		return fmt.Errorf("unsupported video model %q", r.Model)
 	}
@@ -403,6 +477,103 @@ func (r *Request) validateGrokImagineVideo() error {
 	return nil
 }
 
+// validateKlingVideo checks a request for Kling Video 3.0 (Replicate). Kling
+// does text-to-video or image-to-video with a start frame and optional end
+// frame, 3-15s, in standard (720p) / pro (1080p) / 4k modes, with native audio.
+func (r *Request) validateKlingVideo() error {
+	if r.VideoDuration != 0 && (r.VideoDuration < 3 || r.VideoDuration > 15) {
+		return fmt.Errorf("video_duration must be 3-15 seconds for Kling 3.0, got %d", r.VideoDuration)
+	}
+	if KlingMode(r.VideoResolution) == "" {
+		return fmt.Errorf("video_resolution must be 720p, 1080p, or 4k for Kling 3.0, got %q", r.VideoResolution)
+	}
+	switch r.AspectRatio {
+	case "16:9", "9:16", "1:1":
+	default:
+		return fmt.Errorf("Kling 3.0 aspect_ratio must be 16:9, 9:16, or 1:1; got %q", r.AspectRatio)
+	}
+	if len(r.InputImages) > 1 {
+		return fmt.Errorf("Kling 3.0 accepts at most one -input-image start frame, got %d", len(r.InputImages))
+	}
+	if r.LastFrameImage != "" && len(r.InputImages) != 1 {
+		return errors.New("-last-frame-image requires exactly one -input-image start frame")
+	}
+	if len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("Kling 3.0 does not support -reference-image, -reference-video, or -reference-audio; use -model seedance-2 for reference-guided video")
+	}
+	if r.Seed != 0 {
+		return errors.New("Kling 3.0 does not support -seed")
+	}
+	return nil
+}
+
+// KlingMode maps a curds -video-resolution value onto Kling's mode enum,
+// returning "" when the value is not one Kling accepts.
+func KlingMode(res string) string {
+	switch strings.ToLower(strings.TrimSpace(res)) {
+	case "720p":
+		return "standard"
+	case "1080p":
+		return "pro"
+	case "4k":
+		return "4k"
+	}
+	return ""
+}
+
+// validateMinimaxVideo checks a request for MiniMax H3 (Replicate). H3 accepts
+// text-to-video (no image), a first and/or last frame, and up to 9 reference
+// images, 3 reference videos, and 3 reference audio clips. Its resolution enum
+// is 768P / 2K and its ratio enum has no "auto" — image-to-video uses
+// "adaptive".
+func (r *Request) validateMinimaxVideo() error {
+	if r.VideoDuration != 0 && (r.VideoDuration < 4 || r.VideoDuration > 15) {
+		return fmt.Errorf("video_duration must be 4-15 seconds for MiniMax H3, got %d", r.VideoDuration)
+	}
+	if MinimaxVideoResolution(r.VideoResolution) == "" {
+		return fmt.Errorf("video_resolution must be 768p or 2k for MiniMax H3, got %q", r.VideoResolution)
+	}
+	switch r.AspectRatio {
+	case "adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16":
+	default:
+		return fmt.Errorf("MiniMax H3 aspect_ratio must be adaptive, 21:9, 16:9, 4:3, 1:1, 3:4, or 9:16; got %q", r.AspectRatio)
+	}
+	if len(r.InputImages) > 1 {
+		return fmt.Errorf("MiniMax H3 accepts at most one -input-image first frame (use -reference-image for references), got %d", len(r.InputImages))
+	}
+	if r.LastFrameImage != "" && len(r.InputImages) != 1 {
+		return errors.New("-last-frame-image requires exactly one -input-image first frame")
+	}
+	if len(r.ReferenceImages) > 9 {
+		return fmt.Errorf("MiniMax H3 supports at most 9 reference images, got %d", len(r.ReferenceImages))
+	}
+	if len(r.ReferenceVideos) > 3 {
+		return fmt.Errorf("MiniMax H3 supports at most 3 reference videos, got %d", len(r.ReferenceVideos))
+	}
+	if len(r.ReferenceAudios) > 3 {
+		return fmt.Errorf("MiniMax H3 supports at most 3 reference audio clips, got %d", len(r.ReferenceAudios))
+	}
+	if r.Seed != 0 {
+		return errors.New("MiniMax H3 does not support -seed")
+	}
+	if r.GenerateAudio != nil && !*r.GenerateAudio {
+		return errors.New("MiniMax H3 has no audio toggle and does not support -no-audio")
+	}
+	return nil
+}
+
+// MinimaxVideoResolution maps a curds -video-resolution value onto MiniMax H3's
+// resolution enum, returning "" when the value is not one H3 accepts.
+func MinimaxVideoResolution(res string) string {
+	switch strings.ToLower(strings.TrimSpace(res)) {
+	case "768p":
+		return "768P"
+	case "2k":
+		return "2K"
+	}
+	return ""
+}
+
 func (r *Request) validateSeedanceVideo() error {
 	if r.VideoDuration != 0 && r.VideoDuration != -1 && (r.VideoDuration < 4 || r.VideoDuration > 15) {
 		return fmt.Errorf("video_duration must be -1 or 4-15 seconds, got %d", r.VideoDuration)
@@ -445,6 +616,126 @@ func (r *Request) validateSeedanceVideo() error {
 	return nil
 }
 
+// FluxAllowedAspectRatios is FLUX.2 [pro]'s ratio enum. "custom" is implied by
+// -size and "match_input_image" derives the ratio from the first input image.
+var FluxAllowedAspectRatios = map[string]bool{
+	"match_input_image": true, "1:1": true, "16:9": true, "3:2": true,
+	"2:3": true, "4:5": true, "5:4": true, "9:16": true, "3:4": true, "4:3": true,
+}
+
+// NanoBananaAllowedAspectRatios is Nano Banana 2's ratio enum.
+var NanoBananaAllowedAspectRatios = map[string]bool{
+	"match_input_image": true, "1:1": true, "1:4": true, "1:8": true,
+	"2:3": true, "3:2": true, "3:4": true, "4:1": true, "4:3": true,
+	"4:5": true, "5:4": true, "8:1": true, "9:16": true, "16:9": true, "21:9": true,
+}
+
+// FluxImageResolution maps a curds -image-resolution value onto FLUX.2's
+// megapixel enum, returning "" when the value is not one FLUX accepts.
+func FluxImageResolution(res string) string {
+	switch strings.ToLower(strings.TrimSpace(res)) {
+	case "0.5mp":
+		return "0.5 MP"
+	case "1mp":
+		return "1 MP"
+	case "2mp":
+		return "2 MP"
+	case "4mp":
+		return "4 MP"
+	case "match_input_image":
+		return "match_input_image"
+	}
+	return ""
+}
+
+// NanoBananaImageResolution maps a curds -image-resolution value onto Nano
+// Banana 2's enum, returning "" when the value is not one it accepts.
+func NanoBananaImageResolution(res string) string {
+	switch strings.ToLower(strings.TrimSpace(res)) {
+	case "1k":
+		return "1K"
+	case "2k":
+		return "2K"
+	case "4k":
+		return "4K"
+	}
+	return ""
+}
+
+// validateFluxImage checks a request for FLUX.2 [pro] (Replicate). FLUX sizes
+// output by megapixel target or by explicit width/height, produces one image
+// per prediction, and has no quality/background/moderation knobs.
+func (r *Request) validateFluxImage() error {
+	if r.Provider != ProviderReplicate {
+		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	}
+	if r.NumImages != 1 {
+		return fmt.Errorf("FLUX.2 produces one image per request, got num_images=%d", r.NumImages)
+	}
+	switch r.OutputFormat {
+	case "webp", "png", "jpeg":
+	default:
+		return fmt.Errorf("FLUX.2 output_format must be webp, png, or jpeg, got %q", r.OutputFormat)
+	}
+	if r.Mask != "" {
+		return errors.New("FLUX.2 [pro] does not accept -mask (use OpenAI edits, or flux-fill on Replicate)")
+	}
+	if r.Size != "" {
+		w, h, ok := ParseSize(r.Size)
+		if !ok {
+			return fmt.Errorf("invalid -size %q; expected WxH", r.Size)
+		}
+		if w < 256 || w > 2048 || h < 256 || h > 2048 {
+			return fmt.Errorf("FLUX.2 -size edges must be 256-2048 px, got %dx%d", w, h)
+		}
+	} else if !FluxAllowedAspectRatios[r.AspectRatio] {
+		return fmt.Errorf("FLUX.2 aspect_ratio must be one of match_input_image, 1:1, 16:9, 3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3 (or pass -size WxH); got %q", r.AspectRatio)
+	}
+	if r.ImageResolution != "" && FluxImageResolution(r.ImageResolution) == "" {
+		return fmt.Errorf("FLUX.2 -image-resolution must be 0.5mp, 1mp, 2mp, 4mp, or match_input_image; got %q", r.ImageResolution)
+	}
+	if len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("FLUX.2 takes reference images via -input-image, not -reference-image")
+	}
+	return nil
+}
+
+// validateNanoBananaImage checks a request for Google Nano Banana 2
+// (Replicate). It emits jpg/png only, sizes output by 1K/2K/4K, and produces
+// one image per prediction.
+func (r *Request) validateNanoBananaImage() error {
+	if r.Provider != ProviderReplicate {
+		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	}
+	if r.NumImages != 1 {
+		return fmt.Errorf("Nano Banana 2 produces one image per request, got num_images=%d", r.NumImages)
+	}
+	switch r.OutputFormat {
+	case "png", "jpeg":
+	default:
+		return fmt.Errorf("Nano Banana 2 output_format must be png or jpeg (no webp), got %q", r.OutputFormat)
+	}
+	if r.Mask != "" {
+		return errors.New("Nano Banana 2 does not accept -mask; describe the edit in the prompt instead")
+	}
+	if r.Size != "" {
+		return errors.New("Nano Banana 2 has no pixel-size input; use -image-resolution 1k|2k|4k with -aspect-ratio")
+	}
+	if !NanoBananaAllowedAspectRatios[r.AspectRatio] {
+		return fmt.Errorf("Nano Banana 2 aspect_ratio must be one of match_input_image, 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, 21:9; got %q", r.AspectRatio)
+	}
+	if r.ImageResolution != "" && NanoBananaImageResolution(r.ImageResolution) == "" {
+		return fmt.Errorf("Nano Banana 2 -image-resolution must be 1k, 2k, or 4k; got %q", r.ImageResolution)
+	}
+	if r.Seed != 0 {
+		return errors.New("Nano Banana 2 does not support -seed")
+	}
+	if len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("Nano Banana 2 takes reference images via -input-image, not -reference-image")
+	}
+	return nil
+}
+
 func (r *Request) validateSegmentation() error {
 	if r.Provider != ProviderReplicate {
 		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
@@ -480,7 +771,15 @@ func (r *Request) validateUpscale() error {
 	if r.OutputFormat != "" && r.OutputFormat != "png" {
 		return fmt.Errorf("upscale output_format must be png, got %q", r.OutputFormat)
 	}
-	if r.Scale != 0 && (r.Scale < 1 || r.Scale > 10) {
+	if IsTopazUpscaleModel(r.Model) {
+		if TopazUpscaleFactor(r.Scale) == "" {
+			return fmt.Errorf("topaz upscale scale must be 2, 4, or 6, got %g", r.Scale)
+		}
+		if r.FaceEnhance && r.Scale == 0 {
+			// Topaz applies face enhancement during the upscale pass.
+			return errors.New("topaz -face-enhance requires -scale 2, 4, or 6")
+		}
+	} else if r.Scale != 0 && (r.Scale < 1 || r.Scale > 10) {
 		return fmt.Errorf("upscale scale must be between 1 and 10, got %g", r.Scale)
 	}
 	if r.Mask != "" {
@@ -490,6 +789,23 @@ func (r *Request) validateUpscale() error {
 		return errors.New("upscale derives its output size from -scale; -size is not supported")
 	}
 	return nil
+}
+
+// TopazUpscaleFactor maps a curds -scale value onto Topaz's upscale_factor
+// enum, returning "" when the value is not one Topaz accepts. Zero means "no
+// upscale, enhance only", which Topaz spells "None".
+func TopazUpscaleFactor(scale float64) string {
+	switch scale {
+	case 0:
+		return "None"
+	case 2:
+		return "2x"
+	case 4:
+		return "4x"
+	case 6:
+		return "6x"
+	}
+	return ""
 }
 
 // DefaultModel returns the provider's default model name.
@@ -507,7 +823,20 @@ func DefaultModel(provider string) string {
 
 // IsVideoModel reports whether the resolved provider model produces videos.
 func IsVideoModel(model string) bool {
-	return IsSeedanceModel(model) || IsGrokImagineVideoModel(model) || IsXaiVideoModel(model)
+	return IsSeedanceModel(model) || IsGrokImagineVideoModel(model) ||
+		IsXaiVideoModel(model) || IsMinimaxVideoModel(model) ||
+		IsKlingVideoModel(model)
+}
+
+// IsMinimaxVideoModel reports whether the resolved provider model is MiniMax's
+// H3 multimodal video model, served by Replicate.
+func IsMinimaxVideoModel(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	switch model {
+	case MinimaxVideoModel:
+		return true
+	}
+	return strings.HasPrefix(model, MinimaxVideoModel+":")
 }
 
 // IsXaiVideoModel reports whether the resolved model is xAI's native
@@ -534,10 +863,41 @@ func IsSeedanceModel(model string) bool {
 func IsGrokImagineVideoModel(model string) bool {
 	model = strings.TrimSpace(strings.ToLower(model))
 	switch model {
-	case DefaultVideoModel:
+	case GrokImagineVideoModel:
 		return true
 	}
-	return strings.HasPrefix(model, DefaultVideoModel+":")
+	return strings.HasPrefix(model, GrokImagineVideoModel+":")
+}
+
+// IsKlingVideoModel reports whether the resolved provider model is Kling Video
+// 3.0, served by Replicate.
+func IsKlingVideoModel(model string) bool {
+	return matchesReplicateModel(model, KlingVideoModel)
+}
+
+// IsFluxImageModel reports whether the resolved provider model is FLUX.2 [pro].
+func IsFluxImageModel(model string) bool {
+	return matchesReplicateModel(model, FluxImageModel)
+}
+
+// IsNanoBananaImageModel reports whether the resolved provider model is Google
+// Nano Banana 2.
+func IsNanoBananaImageModel(model string) bool {
+	return matchesReplicateModel(model, NanoBananaImageModel)
+}
+
+// IsTopazUpscaleModel reports whether the resolved provider model is Topaz
+// Labs' image upscaler.
+func IsTopazUpscaleModel(model string) bool {
+	return matchesReplicateModel(model, TopazUpscaleModel)
+}
+
+// matchesReplicateModel reports whether model is base, optionally with a
+// ":version" pin. Case- and whitespace-insensitive. Never substring-match a
+// model name: "black-forest-labs/flux-2-pro-evil/x" must not match.
+func matchesReplicateModel(model, base string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	return model == base || strings.HasPrefix(model, base+":")
 }
 
 // IsSegmentationModel reports whether the resolved provider model performs
@@ -559,12 +919,7 @@ func IsSegmentationModel(model string) bool {
 // new pixels from a prompt, so they share the no-prompt validation and
 // request-building path.
 func IsUpscaleModel(model string) bool {
-	model = strings.TrimSpace(strings.ToLower(model))
-	switch model {
-	case "nightmareai/real-esrgan":
-		return true
-	}
-	return strings.HasPrefix(model, "nightmareai/real-esrgan:")
+	return matchesReplicateModel(model, DefaultUpscaleModel) || IsTopazUpscaleModel(model)
 }
 
 // AutoDetectProvider picks a provider based on the supplied env lookup.

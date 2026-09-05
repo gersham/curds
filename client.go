@@ -411,7 +411,7 @@ func (r *Request) validateVideo() error {
 
 // validateXaiVideo checks a request for xAI's native Grok Imagine Video API.
 // Unlike the Replicate wrapper this supports text-to-video (image optional),
-// 1080p, and reference images. The source image goes via -input-image (0 or 1)
+// and reference images. The source image goes via -input-image (0 or 1)
 // and additional references via -reference-image.
 func (r *Request) validateXaiVideo() error {
 	if len(r.InputImages) > 1 {
@@ -421,9 +421,9 @@ func (r *Request) validateXaiVideo() error {
 		return fmt.Errorf("video_duration must be 1-15 seconds for grok-imagine-video, got %d", r.VideoDuration)
 	}
 	switch r.VideoResolution {
-	case "480p", "720p", "1080p":
+	case "480p", "720p":
 	default:
-		return fmt.Errorf("video_resolution must be 480p, 720p, or 1080p for grok-imagine-video, got %q", r.VideoResolution)
+		return fmt.Errorf("video_resolution must be 480p or 720p for native grok-imagine-video, got %q; choose -video-resolution 720p explicitly, or use -provider replicate -model seedance-2 for 1080p; no automatic resolution or model change is made", r.VideoResolution)
 	}
 	switch r.AspectRatio {
 	case "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3":

@@ -621,7 +621,7 @@ func parseFlags() (*cliOptions, error) {
 	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate, up to 3")
 	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok/xai 1-15; Seedance -1 or 4-15 (default: 5)")
 	flag.StringVar(&opts.imageResolution, "image-resolution", "", "Image resolution for models that size by target: flux-2-pro 0.5mp/1mp/2mp/4mp; nano-banana-2 1k/2k/4k")
-	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Kling 720p/1080p/4k (default: 1080p); MiniMax H3 768p/2k (default: 768p); Grok 480p/720p; xai/Seedance 480p/720p/1080p (default: 720p)")
+	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Kling 720p/1080p/4k (default: 1080p); MiniMax H3 768p/2k (default: 768p); Grok 480p/720p; xai 480p/720p; Seedance 480p/720p/1080p (default: 720p)")
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
 	flag.BoolVar(&opts.stripAudio, "strip-audio", true, "Strip the audio track from generated videos via ffmpeg if installed (default: true)")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
@@ -847,7 +847,7 @@ PROVIDERS
                         GET  /v1/videos/{request_id}   (async polling)
              Default model: grok-imagine-video
              Why prefer this: ~half the Replicate cost at 720p, plus
-             text-to-video (image optional), reference images, 1080p, and
+             text-to-video (image optional), reference images, 480p/720p, and
              durations up to 15s. Video-only — no image generation.
              Used automatically for mp4 when no replicate token is set.
 
@@ -955,7 +955,7 @@ FLAGS
                                 (default: 5)
     -video-resolution VALUE      Kling: 720p, 1080p, 4k (default: 1080p);
                                 MiniMax H3: 768p, 2k (default: 768p);
-                                Grok: 480p, 720p; xai/Seedance also 1080p
+                                Grok/xai: 480p, 720p; Seedance also 1080p
                                 (default: 720p)
     -no-audio                    disable Seedance / Kling synchronized audio
                                 (MiniMax H3 and xai/Grok always emit audio)
@@ -1083,10 +1083,10 @@ EXAMPLES
         -prompt "a smooth product turn with soft studio camera motion" \
         -video-resolution 2k -video-duration 10 -output /tmp/h3.mp4
 
-  # Native xAI image-to-video with a reference image, 1080p, 10s
+  # Native xAI image-to-video with a reference image, 720p, 10s
   curds -provider xai -input-image still.png \
         -prompt "a smooth product turn with soft studio camera motion" \
-        -video-resolution 1080p -video-duration 10 -output /tmp/xai.mp4
+        -video-resolution 720p -video-duration 10 -output /tmp/xai.mp4
 
   # Force the Replicate Grok 1.5 wrapper instead of native xAI
   curds -provider replicate -model grok-imagine-video-1.5 -input-image still.png \

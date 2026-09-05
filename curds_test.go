@@ -1486,9 +1486,9 @@ func TestRequestValidateXaiVideo(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
-	t.Run("1080p ok", func(t *testing.T) {
+	t.Run("480p ok", func(t *testing.T) {
 		r := base()
-		r.VideoResolution = "1080p"
+		r.VideoResolution = "480p"
 		if err := r.Validate(); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1557,7 +1557,7 @@ func TestXaiProviderHappyPath(t *testing.T) {
 			if b["duration"] != float64(10) {
 				t.Errorf("duration: %v", b["duration"])
 			}
-			if b["resolution"] != "1080p" {
+			if b["resolution"] != "720p" {
 				t.Errorf("resolution: %v", b["resolution"])
 			}
 			// aspect_ratio "auto" must be omitted.
@@ -1605,7 +1605,7 @@ func TestXaiProviderHappyPath(t *testing.T) {
 		AspectRatio:     "auto",
 		OutputFormat:    "mp4",
 		VideoDuration:   10,
-		VideoResolution: "1080p",
+		VideoResolution: "720p",
 		InputImages:     []string{"https://example.com/product.png"},
 		ReferenceImages: []string{"https://example.com/ref.png"},
 		PollInterval:    5 * time.Millisecond,
@@ -2229,5 +2229,31 @@ func TestEncodeMediaAsDataURLs(t *testing.T) {
 	}
 	if out[2] != "data:image/png;base64,xxx" {
 		t.Errorf("data url passthrough broken")
+	}
+}
+
+// UAT2-F003 captured an HTTP 400: "1080p video resolution is not available
+// for this model." Reject before any paid generation or input-media fetch.
+func TestXai1080pRejectedBeforeNetwork(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid-argument","error":"1080p video resolution is not available for this model."}`))
+	}))
+	defer srv.Close()
+	c := &Client{Xai: &XaiProvider{HTTPClient: srv.Client(), APIBase: srv.URL}}
+	for _, images := range [][]string{nil, {srv.URL + "/source.png"}} {
+		req := &Request{Provider: ProviderXai, Token: "test", Model: "grok-imagine-video", Prompt: "animate", OutputFormat: "mp4", VideoResolution: "1080p", InputImages: images}
+		_, err := c.Generate(context.Background(), req)
+		if err == nil || !strings.Contains(err.Error(), "choose -video-resolution 720p explicitly") || !strings.Contains(err.Error(), "-model seedance-2") {
+			t.Fatalf("expected actionable local error, got %v", err)
+		}
+		if req.VideoResolution != "1080p" || req.Model != "grok-imagine-video" {
+			t.Fatal("request silently downgraded")
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("unsupported request made %d network calls", calls)
 	}
 }

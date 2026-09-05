@@ -232,7 +232,7 @@ No reference images/videos/audio and no `-seed` — use `seedance-2` for those.
 
 Used automatically for MP4 when no `replicate` token is available. The native
 API is roughly half the Replicate cost at 720p and supports
-text-to-video (image optional), reference images, 1080p, and durations up to
+text-to-video (image optional), reference images, 480p/720p, and durations up to
 15s. It is asynchronous: curds submits the job, polls
 `GET /v1/videos/{request_id}`, then downloads the rendered MP4. Audio is
 generated automatically.
@@ -241,10 +241,10 @@ generated automatically.
 # Text-to-video (no input image)
 curds -prompt "a slow serene time-lapse of the milky way" -output /tmp/sky.mp4
 
-# Image-to-video from a reference image, 1080p, 10s
+# Image-to-video from a reference image, 720p, 10s
 curds -provider xai -input-image still.png \
       -prompt "a smooth product turn with soft studio camera motion" \
-      -video-resolution 1080p -video-duration 10 -output /tmp/xai.mp4
+      -video-resolution 720p -video-duration 10 -output /tmp/xai.mp4
 ```
 
 Native `grok-imagine-video` supports:
@@ -252,10 +252,17 @@ Native `grok-imagine-video` supports:
 - `-input-image` — optional image-to-video source (0 or 1).
 - `-reference-image` — additional reference image(s).
 - `-video-duration` — `1` through `15` seconds. Default: `5`.
-- `-video-resolution` — `480p`, `720p`, or `1080p`. Default: `720p`.
+- `-video-resolution` — `480p` or `720p`. Default: `720p`.
 - `-aspect-ratio` — `auto`, `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, or
   `2:3`. `auto` is omitted from the request so the API derives it (from the
   source image, for image-to-video). Default: `auto`.
+
+1080p is not supported by this native model. Curds rejects it before a
+request; it never silently lowers resolution or switches models. Choose
+`-provider replicate -model seedance-2 -video-resolution 1080p` explicitly
+when that model suits the job. xAI documents native 1080p for the distinct
+`grok-imagine-video-1.5` model, not this adapter
+([provider resolution documentation](https://docs.x.ai/developers/model-capabilities/video/generation#resolution)).
 
 ### MiniMax H3 via Replicate (`minimax-h3`)
 

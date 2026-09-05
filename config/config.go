@@ -83,7 +83,7 @@ replicate_name = "google/nano-banana-2"
 replicate_name = "minimax/h3"
 
 # Native xAI Grok Imagine Video (provider xai). Supports text-to-video
-# (image optional), reference images, 1080p, and durations up to 15s.
+# (image optional), reference images, 480p/720p, and durations up to 15s.
 [models.grok-imagine-video]
 xai_name = "grok-imagine-video"
 

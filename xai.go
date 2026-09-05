@@ -18,7 +18,7 @@ import (
 //
 // Unlike the Replicate-hosted xai/grok-imagine-video-1.5 wrapper, the native
 // API exposes the full Grok Imagine Video surface: text-to-video (image
-// optional), reference images, 1080p, and durations up to 15s. It is
+// optional), reference images, 480p/720p, and durations up to 15s. It is
 // asynchronous — a generation call returns a request_id that is polled until
 // the video is ready, then the hosted result is downloaded.
 type XaiProvider struct {

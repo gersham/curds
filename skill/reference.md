@@ -31,6 +31,17 @@ Transparent image generation is not supported by `gpt-image-2`; use
 curds -no-tui -provider openai -input-image source.png -mask mask.png -prompt "$PROMPT" -output "$OUT"
 ```
 
+## Native xAI video
+
+`-provider xai` selects native `grok-imagine-video`: `480p` or `720p`
+(default `720p`), 1–15 seconds. It does not support 1080p. Curds rejects
+unsupported resolution before submitting a job; no automatic downgrade or
+model switch occurs. For 1080p, explicitly select a compatible model such as
+`-provider replicate -model seedance-2`, considering cost and input needs.
+Do not confuse this adapter with native `grok-imagine-video-1.5`.
+For a small video inset, generate at its intended display size and preserve
+aspect ratio; do not upscale a 720p clip to claim native full-screen detail.
+
 ## Seedance 2.0 video (default mp4 model)
 
 Default Replicate video model: `bytedance/seedance-2.0` (model key

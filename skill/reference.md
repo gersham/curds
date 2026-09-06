@@ -33,7 +33,7 @@ curds -no-tui -provider openai -input-image source.png -mask mask.png -prompt "$
 
 ## Native xAI video
 
-`-provider xai` selects native `grok-imagine-video`: `480p` or `720p`
+`-provider xai` (with or without `-model`) selects native `grok-imagine-video`: `480p` or `720p`
 (default `720p`), 1–15 seconds. It does not support 1080p. Curds rejects
 unsupported resolution before submitting a job; no automatic downgrade or
 model switch occurs. For 1080p, explicitly select a compatible model such as

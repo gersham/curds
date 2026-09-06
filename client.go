@@ -300,6 +300,9 @@ func (r *Request) Validate() error {
 	default:
 		return fmt.Errorf("unsupported provider %q (supported: openai, replicate, xai)", r.Provider)
 	}
+	if err := CheckProviderModel(r.Provider, r.Model); err != nil {
+		return err
+	}
 	if r.Token == "" {
 		return fmt.Errorf("missing %s token", r.Provider)
 	}
@@ -804,19 +807,6 @@ func TopazUpscaleFactor(scale float64) string {
 		return "4x"
 	case 6:
 		return "6x"
-	}
-	return ""
-}
-
-// DefaultModel returns the provider's default model name.
-func DefaultModel(provider string) string {
-	switch provider {
-	case ProviderReplicate:
-		return DefaultReplicateModel
-	case ProviderOpenAI:
-		return DefaultOpenAIModel
-	case ProviderXai:
-		return DefaultXaiVideoModel
 	}
 	return ""
 }

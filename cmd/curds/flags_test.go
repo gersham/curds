@@ -137,6 +137,16 @@ func TestExplainFlagErrorPassthrough(t *testing.T) {
 	}
 }
 
+func TestHelpProvidersMentionsExplicitProviderDefault(t *testing.T) {
+	h := helpText()
+	if !strings.Contains(h, "When -provider is set and -model is omitted") {
+		t.Error("PROVIDERS help does not describe explicit -provider defaulting")
+	}
+	if !strings.Contains(h, "rejected locally") {
+		t.Error("PROVIDERS help does not describe local mismatch rejection")
+	}
+}
+
 func TestUsageErrorUnwraps(t *testing.T) {
 	inner := errors.New("boom")
 	err := error(&usageError{err: inner})

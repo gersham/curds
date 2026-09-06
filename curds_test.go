@@ -884,7 +884,7 @@ func TestRequestValidateMinimaxVideo(t *testing.T) {
 			off := false
 			r.GenerateAudio = &off
 		}, "does not support -no-audio"},
-		{"rejects openai provider", func(r *Request) { r.Provider = ProviderOpenAI }, "only supported with provider replicate"},
+		{"rejects openai provider", func(r *Request) { r.Provider = ProviderOpenAI }, "does not support model"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1044,7 +1044,7 @@ func TestRequestValidateKlingVideo(t *testing.T) {
 			r.ReferenceImages = []string{"https://example.com/ref.png"}
 		}, "does not support -reference-image"},
 		{"rejects seed", func(r *Request) { r.Seed = 3 }, "does not support -seed"},
-		{"rejects xai provider", func(r *Request) { r.Provider = ProviderXai }, "only supported with provider replicate"},
+		{"rejects xai provider", func(r *Request) { r.Provider = ProviderXai }, "does not support model"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1184,7 +1184,7 @@ func TestRequestValidateFluxImage(t *testing.T) {
 			r.InputImages = []string{"https://example.com/a.png", "https://example.com/b.png"}
 		}, ""},
 		{"seed ok", func(r *Request) { r.Seed = 42 }, ""},
-		{"rejects openai provider", func(r *Request) { r.Provider = ProviderOpenAI }, "only supported with provider replicate"},
+		{"rejects openai provider", func(r *Request) { r.Provider = ProviderOpenAI }, "does not support model"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1716,7 +1716,7 @@ func TestRequestValidateSegmentation(t *testing.T) {
 		{"rejects num_images > 1", func(r *Request) { r.NumImages = 3 }, "produces exactly one"},
 		{"rejects openai provider", func(r *Request) {
 			r.Provider = ProviderOpenAI
-		}, "only supported with provider replicate"},
+		}, "does not support model"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1843,7 +1843,7 @@ func TestRequestValidateUpscale(t *testing.T) {
 		{"rejects scale too high", func(r *Request) { r.Scale = 20 }, "scale must be between"},
 		{"rejects openai provider", func(r *Request) {
 			r.Provider = ProviderOpenAI
-		}, "only supported with provider replicate"},
+		}, "does not support model"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

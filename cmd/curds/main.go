@@ -177,6 +177,14 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 
+	// Explicit -provider without -model uses that provider's table default
+	// instead of config.default_model (which is an OpenAI image key and
+	// would otherwise be sent to xai). A compatible current value is kept
+	// so replicate + mp4 still uses the video default.
+	if flagWasSet("provider") && !flagWasSet("model") {
+		opts.modelKey = curds.SelectDefaultModel(opts.provider, opts.modelKey)
+	}
+
 	// Resolve token if user didn't pass -token. CLI flag overrides everything.
 	token := opts.tokenFlag
 	if token == "" && opts.provider != "" {
@@ -187,6 +195,9 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	// like png-output for segmentation are applied to opts.outputFormat
 	// before we compute the default output path.
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
+	if err := curds.CheckProviderModel(opts.provider, resolvedModel); err != nil {
+		return &usageError{err: err}
+	}
 	applyModelOutputDefaults(opts, cfg, resolvedModel, logger)
 
 	// Compute default output path if -output was not given.
@@ -857,6 +868,11 @@ PROVIDERS
        (seedance-2 → replicate); xai is used instead when no replicate
        token is available but an xai token is.
     3. token availability — OpenAI is preferred for images when present.
+
+  When -provider is set and -model is omitted, that provider's default
+  model (above) is used instead of config.default_model. An incompatible
+  -provider and -model pair is rejected locally with the supported list;
+  no request is sent.
 
 TOKEN RESOLUTION (first non-empty wins)
   1. -token flag

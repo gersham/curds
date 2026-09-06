@@ -112,7 +112,11 @@ OpenAI preferred for images when both are set. For MP4 output with no `-model`,
 curds uses `default_video_model` (Replicate-hosted Seedance 2.0), falling back
 to the native xAI provider when no `replicate` token is available but an `xai`
 token is. Override with `-provider openai|replicate|xai` or by setting
-`provider` in the config file.
+`provider` in the config file. When `-provider` is set and `-model` is
+omitted, curds uses that provider's default from the table below rather
+than `config.default_model`. An incompatible `-provider`/`-model` pair is
+rejected locally (no request is sent) with the list of models that provider
+supports.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|

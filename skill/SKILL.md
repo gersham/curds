@@ -24,12 +24,14 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   explicitly provides or authorizes one, and don't inspect config/`.env` files
   without a clear auth-debugging need.
 - Provider: `-provider openai` for image generation and edits (`gpt-image-2` —
-  lower latency and cost, more size options, no polling). For ordinary `.mp4`
+  lower latency and cost, more size options, no polling). `-provider xai`
+  without `-model` selects native `grok-imagine-video`. For ordinary `.mp4`
   video omit `-provider`/`-model`; curds defaults to Replicate
   `bytedance/seedance-2.0`. Use `-model` for the Replicate alternatives —
   `flux-2-pro` / `nano-banana-2` (images), `kling-v3` / `minimax-h3` (video),
   `remove-bg`, `upscale`, `upscale-pro` — when the user asks for them or
-  OpenAI access is missing.
+  OpenAI access is missing. Do not pair `-provider` with a model that
+  provider does not run; curds rejects the pair locally.
 
 ## Commands
 

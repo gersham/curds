@@ -118,7 +118,10 @@ tests are deterministic and fast.
 1. New file `<name>.go` in the root (`package curds`) implementing
    `Provider` (`Generate`, `Name`).
 2. Wire it in `Client.providerFor` and `New()`.
-3. Add a `ProviderXXX` constant + default model.
+3. Add a `ProviderXXX` constant and a row in the `providerModels` table
+   (default + supported list). `-provider` without `-model` reads that
+   default; incompatible pairs fail in `CheckProviderModel` before any
+   network call.
 4. If it has different aspect-ratio constraints, gate them in `Request.Validate`.
 5. Cover the happy path, an error response, and any polling/edit flow with
    httptest in `curds_test.go`.

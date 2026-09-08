@@ -1,6 +1,6 @@
 # Curds CLI — full parameter reference
 
-Written from `curds --help` for version `0.2.0`; if the installed help text
+Written from `curds --help` for version `0.3.0`; if the installed help text
 differs, prefer the current `curds --help` output.
 
 ## Output formats
@@ -12,12 +12,12 @@ generation, `.mp4` uses the current default video model unless `-provider` or
 
 ## Image sizes and aspect ratios
 
-OpenAI `gpt-image-2` named aspect ratios: `1:1`, `3:2`, `2:3`, `4:3`, `3:4`,
+OpenAI `gpt-image-2.5` / `gpt-image-2` named aspect ratios: `1:1`, `3:2`, `2:3`, `4:3`, `3:4`,
 `16:9`, `9:16`, `21:9`, `9:21`, `2:1`, `1:2`, `16:9-4k`, `9:16-4k`.
 Custom `-size WxH` is OpenAI-only and is rounded to model constraints.
 Replicate's `openai/gpt-image-2` wrapper only accepts `1:1`, `3:2`, and `2:3`.
 
-Transparent image generation is not supported by `gpt-image-2`; use
+Transparent image generation is not supported by `gpt-image-2.5` / `gpt-image-2`; use
 `-model remove-bg` for transparent PNG cutouts from an existing image.
 
 ## Reference images and masks
@@ -97,7 +97,10 @@ curds -no-tui -provider replicate -model seedance-2 -aspect-ratio 16:9 -video-du
 
 ## Alternative image models (only when the user asks, or for cost)
 
-`gpt-image-2` via `-provider openai` stays the default. Two Replicate models
+`gpt-image-2.5` via `-provider openai` is the default image model (OpenAI id
+`gpt-image-2.5-flare`; `-model gpt-image-2` picks the previous generation).
+It takes the same size, quality, background, moderation, and output-format
+parameters as `gpt-image-2`. Two Replicate models
 cover what it does poorly; both take references via `-input-image`, produce one
 image per request, ignore `-quality`/`-background`/`-moderation`, and reject
 `-mask`.

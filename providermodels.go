@@ -21,8 +21,14 @@ type providerModelSpec struct {
 // models. Keep in sync with config.builtinModels and the PROVIDERS help text.
 var providerModels = map[string]providerModelSpec{
 	ProviderOpenAI: {
-		Default:   DefaultOpenAIModel,
-		Supported: []string{DefaultOpenAIModel},
+		Default: DefaultOpenAIModel,
+		Supported: []string{
+			"gpt-image-2.5",
+			GPTImage2Model,
+		},
+		aliases: []string{
+			GPTImage25Model,
+		},
 	},
 	ProviderXai: {
 		Default:   DefaultXaiVideoModel,

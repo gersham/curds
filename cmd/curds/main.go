@@ -32,7 +32,7 @@ import (
 )
 
 // version is the curds release version, reported by the curds.start log event.
-const version = "0.2.0"
+const version = "0.3.0"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -177,12 +177,18 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 
-	// Explicit -provider without -model uses that provider's table default
-	// instead of config.default_model (which is an OpenAI image key and
-	// would otherwise be sent to xai). A compatible current value is kept
-	// so replicate + mp4 still uses the video default.
-	if flagWasSet("provider") && !flagWasSet("model") {
-		opts.modelKey = curds.SelectDefaultModel(opts.provider, opts.modelKey)
+	// When -model is omitted, the configured default must still be runnable on
+	// the resolved provider. config.default_model is an image key, so an
+	// auto-detected replicate or xai provider would otherwise be handed
+	// gpt-image-2.5 (OpenAI-only) and fail the pair check. Swap in that
+	// provider's table default instead; a compatible current value is kept so
+	// replicate + mp4 still uses the video default.
+	if !flagWasSet("model") && opts.provider != "" {
+		if picked := curds.SelectDefaultModel(opts.provider, opts.modelKey); picked != opts.modelKey {
+			logger.info("model.fallback", "from", opts.modelKey, "to", picked,
+				"reason", "unsupported on provider "+opts.provider)
+			opts.modelKey = picked
+		}
 	}
 
 	// Resolve token if user didn't pass -token. CLI flag overrides everything.
@@ -821,8 +827,8 @@ SYNOPSIS
   echo PROMPT | curds [flags]
 
 DESCRIPTION
-  Generates images using gpt-image-2 (default; FLUX.2 [pro] and Nano Banana 2
-  also available on Replicate), videos with Seedance 2.0 on Replicate (default
+  Generates images using gpt-image-2.5 (default; gpt-image-2, FLUX.2 [pro] and
+  Nano Banana 2 are also available), videos with Seedance 2.0 on Replicate (default
   for mp4; Kling 3.0, MiniMax H3, Grok Imagine Video also selectable),
   removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
@@ -835,7 +841,8 @@ PROVIDERS
   openai     OpenAI Image API direct   [recommended for OpenAI models]
              Endpoints: POST /v1/images/generations
                         POST /v1/images/edits   (when -input-image or -mask is set)
-             Default model: gpt-image-2
+             Default model: gpt-image-2.5 (id gpt-image-2.5-flare)
+             Also available: -model gpt-image-2
              Why prefer this: lower latency, lower cost, full parameter
              surface (any valid -size, -output-compression, -user, etc.),
              and immediate b64_json responses (no polling).
@@ -870,9 +877,21 @@ PROVIDERS
     3. token availability — OpenAI is preferred for images when present.
 
   When -provider is set and -model is omitted, that provider's default
-  model (above) is used instead of config.default_model. An incompatible
-  -provider and -model pair is rejected locally with the supported list;
-  no request is sent.
+  model (above) is used instead of config.default_model. The same swap
+  happens on auto-detect when config.default_model has no mapping for the
+  resolved provider (gpt-image-2.5 is OpenAI-only, so replicate falls back
+  to openai/gpt-image-2). An explicitly requested -provider and -model pair
+  that cannot work is rejected locally with the supported list; no request
+  is sent.
+
+MODELS
+  gpt-image-2.5   default. OpenAI id gpt-image-2.5-flare. Same request
+                  surface as gpt-image-2 (size, quality, background,
+                  moderation, output_format, output_compression, user), so
+                  every -aspect-ratio / -size / -quality flag behaves as
+                  documented below.
+  gpt-image-2     previous generation; OpenAI id gpt-image-2, Replicate id
+                  openai/gpt-image-2.
 
 TOKEN RESOLUTION (first non-empty wins)
   1. -token flag
@@ -918,7 +937,8 @@ FLAGS
   Image parameters
     -aspect-ratio       RATIO              see ASPECT RATIOS (default: 1:1)
     -size               WxH                explicit pixel size (openai)
-                                           rounded to gpt-image-2 constraints
+                                           rounded to gpt-image-2/2.5
+                                           constraints (multiples of 16)
     -quality            {low|medium|high|auto}     default: auto
     -number-of-images   N                  1-10 (default: 1)
     -image-resolution   VALUE              flux-2-pro: 0.5mp, 1mp, 2mp, 4mp,
@@ -930,7 +950,7 @@ FLAGS
     -output-compression 0-100              openai webp/jpeg (default: 90)
     -background         {auto|opaque}      default: auto
                                            (transparent unsupported by
-                                           gpt-image-2)
+                                           gpt-image-2 / 2.5)
     -moderation         {auto|low}         default: auto
 
   Reference images / edits
@@ -1010,7 +1030,7 @@ ASPECT RATIOS
                                        2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4,
                                        8:1, 9:16, 16:9, 21:9
 
-  OpenAI gpt-image-2 constraints:
+  OpenAI gpt-image-2 / gpt-image-2.5 constraints:
     - both edges multiples of 16
     - max edge <= 3840 px
     - long edge / short edge <= 3:1

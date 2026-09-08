@@ -28,9 +28,12 @@ func TestSelectDefaultModel(t *testing.T) {
 		want     string
 	}{
 		{"xai replaces openai image default", ProviderXai, "gpt-image-2", DefaultXaiVideoModel},
+		{"replicate replaces gpt-image-2.5", ProviderReplicate, "gpt-image-2.5", DefaultReplicateModel},
 		{"xai replaces replicate video default", ProviderXai, "seedance-2", DefaultXaiVideoModel},
 		{"xai empty uses its default", ProviderXai, "", DefaultXaiVideoModel},
 		{"openai keeps its image default", ProviderOpenAI, "gpt-image-2", "gpt-image-2"},
+		{"openai keeps the 2.5 key", ProviderOpenAI, "gpt-image-2.5", "gpt-image-2.5"},
+		{"openai keeps the resolved 2.5 id", ProviderOpenAI, GPTImage25Model, GPTImage25Model},
 		{"openai empty uses its default", ProviderOpenAI, "", DefaultOpenAIModel},
 		{"replicate keeps image default key", ProviderReplicate, "gpt-image-2", "gpt-image-2"},
 		{"replicate keeps mp4 video default", ProviderReplicate, "seedance-2", "seedance-2"},
@@ -65,13 +68,15 @@ func TestCheckProviderModel(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		msg := err.Error()
-		if !strings.Contains(msg, ProviderOpenAI) || !strings.Contains(msg, "seedance-2") || !strings.Contains(msg, DefaultOpenAIModel) {
+		if !strings.Contains(msg, ProviderOpenAI) || !strings.Contains(msg, "seedance-2") || !strings.Contains(msg, "gpt-image-2.5") {
 			t.Errorf("error %q missing provider/model/supported", msg)
 		}
 	})
 	t.Run("compatible pairs pass through", func(t *testing.T) {
 		pairs := [][2]string{
 			{ProviderOpenAI, "gpt-image-2"},
+			{ProviderOpenAI, "gpt-image-2.5"},
+			{ProviderOpenAI, GPTImage25Model},
 			{ProviderXai, "grok-imagine-video"},
 			{ProviderReplicate, "gpt-image-2"},
 			{ProviderReplicate, "openai/gpt-image-2"},

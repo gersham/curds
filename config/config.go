@@ -27,7 +27,7 @@ const DefaultTOML = `# Curds image/video-generation config.
 provider = ""
 
 # Default model key (looked up in [models.<key>] below).
-default_model = "gpt-image-2"
+default_model = "gpt-image-2.5"
 
 # Video model key used when output is mp4 and -model is omitted. Seedance 2.0
 # leads on reference handling, multi-scene continuity and native audio. When no
@@ -60,6 +60,14 @@ number_of_images = 1
 
 # Models. Each entry maps a logical key (used with -model) to the
 # provider-specific model identifier. Add more as you go.
+
+# gpt-image-2.5 via the OpenAI Image API. The default: -model gpt-image-2.5
+# resolves to the gpt-image-2.5-flare id.
+[models.gpt-image-2.5]
+openai_name = "gpt-image-2.5-flare"
+
+# gpt-image-2, the previous generation. Same request surface as 2.5; select it
+# explicitly with -model gpt-image-2 when you want the older look.
 [models.gpt-image-2]
 openai_name = "gpt-image-2"
 replicate_name = "openai/gpt-image-2"
@@ -123,6 +131,7 @@ replicate_name = "topazlabs/image-upscale"
 // parsed config for any key the file does not define, keeping older config
 // files working as new models land. Keep in sync with DefaultTOML.
 var builtinModels = map[string]ModelConfig{
+	"gpt-image-2.5":          {OpenAIName: "gpt-image-2.5-flare"},
 	"gpt-image-2":            {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
 	"flux-2-pro":             {ReplicateName: "black-forest-labs/flux-2-pro"},
 	"nano-banana-2":          {ReplicateName: "google/nano-banana-2"},
@@ -216,7 +225,7 @@ func LoadOrCreateAt(path string) (*Config, bool, error) {
 // rest of the program can rely on them.
 func (c *Config) applyZeroDefaults() {
 	if c.DefaultModel == "" {
-		c.DefaultModel = "gpt-image-2"
+		c.DefaultModel = "gpt-image-2.5"
 	}
 	if c.DefaultVideoModel == "" {
 		c.DefaultVideoModel = "seedance-2"

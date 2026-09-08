@@ -18,7 +18,7 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if !created {
 		t.Fatal("expected created=true on first run")
 	}
-	if cfg.DefaultModel != "gpt-image-2" {
+	if cfg.DefaultModel != "gpt-image-2.5" {
 		t.Errorf("DefaultModel: %q", cfg.DefaultModel)
 	}
 	if cfg.DefaultVideoModel != "seedance-2" {
@@ -30,8 +30,11 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.Output.Compression != 90 {
 		t.Errorf("Output.Compression: %d", cfg.Output.Compression)
 	}
-	if _, ok := cfg.Models["gpt-image-2"]; !ok {
+	if _, ok := cfg.Models["gpt-image-2.5"]; !ok {
 		t.Errorf("default model missing from Models map")
+	}
+	if cfg.Models["gpt-image-2.5"].OpenAIName != "gpt-image-2.5-flare" {
+		t.Errorf("openai name: %q", cfg.Models["gpt-image-2.5"].OpenAIName)
 	}
 	if cfg.Models["gpt-image-2"].ReplicateName != "openai/gpt-image-2" {
 		t.Errorf("replicate name: %q", cfg.Models["gpt-image-2"].ReplicateName)
@@ -197,18 +200,25 @@ func TestExpandTilde(t *testing.T) {
 
 func TestResolveModel(t *testing.T) {
 	cfg := &Config{
-		DefaultModel:      "gpt-image-2",
+		DefaultModel:      "gpt-image-2.5",
 		DefaultVideoModel: "grok-imagine-video-1.5",
 		Models: map[string]ModelConfig{
+			"gpt-image-2.5":          {OpenAIName: "gpt-image-2.5-flare"},
 			"gpt-image-2":            {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
 			"grok-imagine-video-1.5": {ReplicateName: "xai/grok-imagine-video-1.5"},
 			"seedance-2":             {ReplicateName: "bytedance/seedance-2.0"},
 		},
 	}
-	if got := ResolveModel(cfg, "", "openai"); got != "gpt-image-2" {
+	if got := ResolveModel(cfg, "", "openai"); got != "gpt-image-2.5-flare" {
 		t.Errorf("openai default: %q", got)
 	}
-	if got := ResolveModel(cfg, "", "replicate"); got != "openai/gpt-image-2" {
+	if got := ResolveModel(cfg, "gpt-image-2", "openai"); got != "gpt-image-2" {
+		t.Errorf("openai previous generation: %q", got)
+	}
+	// gpt-image-2.5 has no replicate mapping: the key passes through and the
+	// CLI swaps it for the replicate default (curds.SelectDefaultModel), so a
+	// replicate-only install does not send an OpenAI model id upstream.
+	if got := ResolveModel(cfg, "", "replicate"); got != "gpt-image-2.5" {
 		t.Errorf("replicate default: %q", got)
 	}
 	// Unknown key: passes through.
@@ -232,6 +242,9 @@ func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
 		},
 	}
 	cfg.applyZeroDefaults()
+	if got := ResolveModel(cfg, "gpt-image-2.5", "openai"); got != "gpt-image-2.5-flare" {
+		t.Errorf("backfilled gpt-image-2.5: %q", got)
+	}
 	if got := ResolveModel(cfg, "minimax-h3", "replicate"); got != "minimax/h3" {
 		t.Errorf("backfilled minimax-h3: %q", got)
 	}

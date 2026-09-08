@@ -279,6 +279,60 @@ func TestDetectMime(t *testing.T) {
 	}
 }
 
+// gpt-image-2.5 is the default OpenAI image model: an omitted -model must
+// resolve to its id, and an explicit -model gpt-image-2 must still reach the
+// previous generation.
+func TestOpenAIGPTImage25Default(t *testing.T) {
+	if DefaultOpenAIModel != "gpt-image-2.5-flare" {
+		t.Fatalf("DefaultOpenAIModel = %q, want gpt-image-2.5-flare", DefaultOpenAIModel)
+	}
+	// The config layer maps the "gpt-image-2.5" key onto this id before the
+	// request reaches the library, so only resolved ids appear here.
+	cases := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{"omitted model uses 2.5", "", "gpt-image-2.5-flare"},
+		{"explicit 2.5 id", GPTImage25Model, "gpt-image-2.5-flare"},
+		{"explicit previous generation", GPTImage2Model, GPTImage2Model},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &captured)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": []map[string]any{{"b64_json": base64.StdEncoding.EncodeToString([]byte("png"))}},
+				})
+			}))
+			defer srv.Close()
+
+			c := &Client{
+				HTTPClient: srv.Client(),
+				OpenAI:     &OpenAIProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+			}
+			if _, err := c.Generate(context.Background(), &Request{
+				Provider:     ProviderOpenAI,
+				Token:        "test-key",
+				Model:        tc.model,
+				Prompt:       "a watercolor fox",
+				AspectRatio:  "16:9",
+				OutputFormat: "webp",
+			}); err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if captured["model"] != tc.want {
+				t.Errorf("model in body = %v, want %q", captured["model"], tc.want)
+			}
+			if captured["size"] != "2048x1152" {
+				t.Errorf("size in body = %v, want 2048x1152 (2.5 keeps the gpt-image-2 size grid)", captured["size"])
+			}
+		})
+	}
+}
+
 // --- OpenAI provider integration test against an httptest stub ---
 
 func TestOpenAIProviderGenerations(t *testing.T) {

@@ -4,11 +4,12 @@
 
 ![curds in action](docs/curds-preview.png)
 
-Generate images from the command line via OpenAI's gpt-image-2 (direct), or
-images/videos via Replicate-hosted models such as Grok Imagine Video 1.5 and
-Seedance 2.0. Also wraps Replicate's `bria/remove-background` for one-shot
-transparent-PNG cutouts (`-model remove-bg`) and `nightmareai/real-esrgan`
-for super-resolution upscaling (`-model upscale`). Logs upstream progress in colorized
+Generate images from the command line via OpenAI's gpt-image-2.5 (direct, the
+default), or images/videos via Replicate-hosted models such as Grok Imagine
+Video 1.5 and Seedance 2.0. Also wraps Replicate's `bria/remove-background`
+for one-shot transparent-PNG cutouts (`-model remove-bg`) and
+`nightmareai/real-esrgan` for super-resolution upscaling (`-model upscale`).
+Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
 banner, multiline prompt, spinner, scrolling log panel, and a "generate
@@ -27,7 +28,7 @@ another?" loop after each render.
   Kitty, Windows Terminal, GNOME Terminal, etc.).
 - An API token from at least one provider:
   - [OpenAI](https://platform.openai.com/api-keys) — needs API
-    Organization Verification to call gpt-image-2.
+    Organization Verification to call gpt-image-2.5.
   - [Replicate](https://replicate.com/account/api-tokens) — alternative
     backend, no verification dance.
   - [xAI](https://console.x.ai) — native Grok Imagine Video (recommended
@@ -120,7 +121,7 @@ supports.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
-| openai    | `gpt-image-2`         | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
+| openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`) | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
 | replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
@@ -143,10 +144,16 @@ curds -input-image lounge.png -mask mask.png \
       -prompt "indoor lounge with flamingo in pool"
 ```
 
-## Alternative image models (Replicate)
+## Image models
 
-`gpt-image-2` stays the default — it still leads both Artificial Analysis image
-arenas — but two Replicate-hosted models cover cases it handles poorly:
+`gpt-image-2.5` (`-model gpt-image-2.5`, OpenAI id `gpt-image-2.5-flare`) is
+the default image model. It takes the same request surface as `gpt-image-2` —
+the same `-size` / `-aspect-ratio` grid, `-quality`, `-background`,
+`-moderation`, `-output-format` and `-output-compression` — so everything
+below applies to it unchanged. `gpt-image-2` (`-model gpt-image-2`) remains
+selectable for the previous generation's look.
+
+Two Replicate-hosted models cover cases the OpenAI models handle poorly:
 
 | `-model`        | Use it for                                                            |
 |-----------------|-----------------------------------------------------------------------|
@@ -389,7 +396,7 @@ curds -model upscale-pro -input-image headshot.jpg -scale 2 -face-enhance
 ## Aspect ratios
 
 `-aspect-ratio` accepts these named ratios (mapped to multiples-of-16
-sizes for gpt-image-2):
+sizes for gpt-image-2 / gpt-image-2.5):
 
 | Ratio       | OpenAI size  | Notes                          |
 |-------------|--------------|--------------------------------|
@@ -427,7 +434,7 @@ becomes `1920×1088`, for example).
 
 ```toml
 provider = ""                   # "openai", "replicate", "xai", or "" to auto-detect
-default_model = "gpt-image-2"
+default_model = "gpt-image-2.5"     # OpenAI id gpt-image-2.5-flare
 default_video_model = "seedance-2"              # model used for MP4 output
 
 [output]
@@ -446,6 +453,9 @@ aspect_ratio = "1:1"
 background = "auto"
 moderation = "auto"
 number_of_images = 1
+
+[models.gpt-image-2.5]
+openai_name = "gpt-image-2.5-flare"
 
 [models.gpt-image-2]
 openai_name = "gpt-image-2"

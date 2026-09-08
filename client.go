@@ -1,7 +1,7 @@
 // Package curds generates images and videos via generation providers.
 //
 // Supported providers:
-//   - openai    (direct OpenAI Image API; default model gpt-image-2)
+//   - openai    (direct OpenAI Image API; default model gpt-image-2.5-flare)
 //   - replicate (Replicate-hosted models; default openai/gpt-image-2)
 //   - xai       (native xAI video API; model grok-imagine-video)
 //
@@ -28,7 +28,19 @@ const (
 	ProviderXai       = "xai"
 
 	DefaultReplicateModel = "openai/gpt-image-2"
-	DefaultOpenAIModel    = "gpt-image-2"
+	DefaultOpenAIModel    = GPTImage25Model
+
+	// GPTImage25Model is the gpt-image-2.5 model curds sends to the OpenAI
+	// Image API and the default image model. It takes the same request
+	// surface as gpt-image-2 on /v1/images/generations and /v1/images/edits
+	// (model, prompt, n, size, quality, background, moderation,
+	// output_format, output_compression, user), so nothing about sizing,
+	// aspect ratios, or output formats changes with it — only the id.
+	GPTImage25Model = "gpt-image-2.5-flare"
+
+	// GPTImage2Model is the previous-generation image model, still
+	// selectable via -model gpt-image-2.
+	GPTImage2Model = "gpt-image-2"
 
 	// GrokImagineVideoModel is the Replicate-hosted Grok Imagine Video 1.5
 	// wrapper (image-to-video only) and the default Replicate video model.

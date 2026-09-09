@@ -32,7 +32,7 @@ import (
 )
 
 // version is the curds release version, reported by the curds.start log event.
-const version = "0.3.0"
+const version = "0.3.1"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -621,7 +621,7 @@ func parseFlags() (*cliOptions, error) {
 
 	flag.StringVar(&opts.aspectRatio, "aspect-ratio", "", "Aspect ratio override (default: config.defaults.aspect_ratio)")
 	flag.StringVar(&opts.size, "size", "", "Explicit pixel size for openai (e.g. 2048x1152)")
-	flag.StringVar(&opts.quality, "quality", "", "Quality: low, medium, high, auto")
+	flag.StringVar(&opts.quality, "quality", "", "Quality: low, medium, high, xhigh, max, auto")
 	flag.IntVar(&opts.numImages, "number-of-images", 0, "Number of images (1-10)")
 	flag.StringVar(&opts.outputFormat, "output-format", "", "Output format: webp, png, jpeg, mp4")
 	flag.IntVar(&opts.outputCompression, "output-compression", -1, "Output compression 0-100 (openai webp/jpeg)")
@@ -842,7 +842,8 @@ PROVIDERS
              Endpoints: POST /v1/images/generations
                         POST /v1/images/edits   (when -input-image or -mask is set)
              Default model: gpt-image-2.5 (id gpt-image-2.5-flare)
-             Also available: -model gpt-image-2
+             Also available: -model gpt-image-2.5-sunburst (larger 2.5),
+                             -model gpt-image-2
              Why prefer this: lower latency, lower cost, full parameter
              surface (any valid -size, -output-compression, -user, etc.),
              and immediate b64_json responses (no polling).
@@ -885,13 +886,18 @@ PROVIDERS
   is sent.
 
 MODELS
-  gpt-image-2.5   default. OpenAI id gpt-image-2.5-flare. Same request
-                  surface as gpt-image-2 (size, quality, background,
-                  moderation, output_format, output_compression, user), so
-                  every -aspect-ratio / -size / -quality flag behaves as
-                  documented below.
-  gpt-image-2     previous generation; OpenAI id gpt-image-2, Replicate id
-                  openai/gpt-image-2.
+  gpt-image-2.5            default. GPT Image 2.5 Flare
+                           (id gpt-image-2.5-flare). Fast everyday 2.5.
+                           Same request surface as gpt-image-2 (size,
+                           quality, background, moderation, output_format,
+                           output_compression, user), so every
+                           -aspect-ratio / -size / -quality flag behaves
+                           as documented below.
+  gpt-image-2.5-sunburst   GPT Image 2.5 Sunburst, the larger 2.5 model.
+                           Higher quality, longer generation. Same request
+                           surface as Flare. Alias: -model sunburst.
+  gpt-image-2              previous generation; OpenAI id gpt-image-2,
+                           Replicate id openai/gpt-image-2.
 
 TOKEN RESOLUTION (first non-empty wins)
   1. -token flag
@@ -939,7 +945,7 @@ FLAGS
     -size               WxH                explicit pixel size (openai)
                                            rounded to gpt-image-2/2.5
                                            constraints (multiples of 16)
-    -quality            {low|medium|high|auto}     default: auto
+    -quality            {low|medium|high|xhigh|max|auto}  default: auto
     -number-of-images   N                  1-10 (default: 1)
     -image-resolution   VALUE              flux-2-pro: 0.5mp, 1mp, 2mp, 4mp,
                                            match_input_image (default: 1mp);
@@ -1078,6 +1084,10 @@ EXAMPLES
   # Force OpenAI, ~1080p landscape, custom output
   curds -provider openai -aspect-ratio 16:9 \
         -prompt "neon cyberpunk city skyline" -output /tmp/city.webp
+
+  # GPT Image 2.5 Sunburst — the larger 2.5 model
+  curds -model gpt-image-2.5-sunburst -quality max \
+        -prompt "editorial still" -output /tmp/still.webp
 
   # Compose from reference images (OpenAI /v1/images/edits)
   curds -input-image ref1.png,ref2.png \

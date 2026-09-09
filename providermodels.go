@@ -24,10 +24,13 @@ var providerModels = map[string]providerModelSpec{
 		Default: DefaultOpenAIModel,
 		Supported: []string{
 			"gpt-image-2.5",
+			"gpt-image-2.5-sunburst",
 			GPTImage2Model,
 		},
 		aliases: []string{
 			GPTImage25Model,
+			GPTImage25SunburstModel,
+			"sunburst",
 		},
 	},
 	ProviderXai: {

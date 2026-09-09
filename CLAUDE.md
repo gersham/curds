@@ -5,7 +5,8 @@ project-local context. Keep it short and load-bearing.
 
 ## What this repo is
 
-A Go CLI + library for generating images via OpenAI's gpt-image-2 (direct),
+A Go CLI + library for generating images via OpenAI's gpt-image-2.5 (direct;
+Flare default, Sunburst via `-model gpt-image-2.5-sunburst`),
 plus images/videos via Replicate-hosted models (FLUX.2 [pro], Nano Banana 2,
 Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), plus background
 removal via `bria/remove-background` (segmentation), plus image upscaling via

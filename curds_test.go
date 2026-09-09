@@ -295,6 +295,7 @@ func TestOpenAIGPTImage25Default(t *testing.T) {
 	}{
 		{"omitted model uses 2.5", "", "gpt-image-2.5-flare"},
 		{"explicit 2.5 id", GPTImage25Model, "gpt-image-2.5-flare"},
+		{"explicit sunburst id", GPTImage25SunburstModel, GPTImage25SunburstModel},
 		{"explicit previous generation", GPTImage2Model, GPTImage2Model},
 	}
 	for _, tc := range cases {

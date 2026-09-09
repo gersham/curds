@@ -24,8 +24,10 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   explicitly provides or authorizes one, and don't inspect config/`.env` files
   without a clear auth-debugging need.
 - Provider: `-provider openai` for image generation and edits (`gpt-image-2.5`,
-  OpenAI id `gpt-image-2.5-flare` — lower latency and cost, more size options,
-  no polling). `-model gpt-image-2` selects the previous generation.
+  OpenAI id `gpt-image-2.5-flare` — fast everyday 2.5, more size options,
+  no polling). `-model gpt-image-2.5-sunburst` (alias `sunburst`) is the
+  larger 2.5 model for higher quality. `-model gpt-image-2` selects the
+  previous generation.
   `-provider xai` without `-model` selects native `grok-imagine-video`. For ordinary `.mp4`
   video omit `-provider`/`-model`; curds defaults to Replicate
   `bytedance/seedance-2.0`. Use `-model` for the Replicate alternatives —

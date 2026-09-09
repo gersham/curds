@@ -36,6 +36,9 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.Models["gpt-image-2.5"].OpenAIName != "gpt-image-2.5-flare" {
 		t.Errorf("openai name: %q", cfg.Models["gpt-image-2.5"].OpenAIName)
 	}
+	if cfg.Models["gpt-image-2.5-sunburst"].OpenAIName != "gpt-image-2.5-sunburst" {
+		t.Errorf("sunburst openai name: %q", cfg.Models["gpt-image-2.5-sunburst"].OpenAIName)
+	}
 	if cfg.Models["gpt-image-2"].ReplicateName != "openai/gpt-image-2" {
 		t.Errorf("replicate name: %q", cfg.Models["gpt-image-2"].ReplicateName)
 	}
@@ -244,6 +247,12 @@ func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
 	cfg.applyZeroDefaults()
 	if got := ResolveModel(cfg, "gpt-image-2.5", "openai"); got != "gpt-image-2.5-flare" {
 		t.Errorf("backfilled gpt-image-2.5: %q", got)
+	}
+	if got := ResolveModel(cfg, "gpt-image-2.5-sunburst", "openai"); got != "gpt-image-2.5-sunburst" {
+		t.Errorf("backfilled gpt-image-2.5-sunburst: %q", got)
+	}
+	if got := ResolveModel(cfg, "sunburst", "openai"); got != "gpt-image-2.5-sunburst" {
+		t.Errorf("backfilled sunburst: %q", got)
 	}
 	if got := ResolveModel(cfg, "minimax-h3", "replicate"); got != "minimax/h3" {
 		t.Errorf("backfilled minimax-h3: %q", got)

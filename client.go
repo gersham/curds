@@ -30,13 +30,18 @@ const (
 	DefaultReplicateModel = "openai/gpt-image-2"
 	DefaultOpenAIModel    = GPTImage25Model
 
-	// GPTImage25Model is the gpt-image-2.5 model curds sends to the OpenAI
-	// Image API and the default image model. It takes the same request
-	// surface as gpt-image-2 on /v1/images/generations and /v1/images/edits
-	// (model, prompt, n, size, quality, background, moderation,
-	// output_format, output_compression, user), so nothing about sizing,
-	// aspect ratios, or output formats changes with it — only the id.
+	// GPTImage25Model is GPT Image 2.5 Flare, the default image model.
+	// Fast everyday 2.5. Same request surface as gpt-image-2 on
+	// /v1/images/generations and /v1/images/edits (model, prompt, n, size,
+	// quality, background, moderation, output_format, output_compression,
+	// user), so nothing about sizing, aspect ratios, or output formats
+	// changes with it — only the id.
 	GPTImage25Model = "gpt-image-2.5-flare"
+
+	// GPTImage25SunburstModel is GPT Image 2.5 Sunburst, the larger 2.5
+	// model. Higher quality, longer generation. Same request surface as
+	// Flare. Selectable via -model gpt-image-2.5-sunburst or -model sunburst.
+	GPTImage25SunburstModel = "gpt-image-2.5-sunburst"
 
 	// GPTImage2Model is the previous-generation image model, still
 	// selectable via -model gpt-image-2.
@@ -138,7 +143,7 @@ type Request struct {
 	Prompt            string
 	AspectRatio       string // e.g. "16:9"; ignored if Size is set
 	Size              string // e.g. "2048x1152"; OpenAI only
-	Quality           string // low, medium, high, auto
+	Quality           string // low, medium, high, xhigh, max, auto
 	NumImages         int
 	OutputFormat      string // webp, png, jpeg, mp4
 	OutputCompression int    // 0-100; OpenAI webp/jpeg only

@@ -797,6 +797,8 @@ func buildSettingsForm(v *settingsFormValues) *huh.Form {
 					huh.NewOption("low (fast / cheap)", "low"),
 					huh.NewOption("medium", "medium"),
 					huh.NewOption("high", "high"),
+					huh.NewOption("xhigh", "xhigh"),
+					huh.NewOption("max", "max"),
 				).
 				Value(&v.Quality),
 			huh.NewSelect[string]().

@@ -1,6 +1,6 @@
 # Curds CLI — full parameter reference
 
-Written from `curds --help` for version `0.3.0`; if the installed help text
+Written from `curds --help` for version `0.3.1`; if the installed help text
 differs, prefer the current `curds --help` output.
 
 ## Output formats
@@ -98,8 +98,11 @@ curds -no-tui -provider replicate -model seedance-2 -aspect-ratio 16:9 -video-du
 ## Alternative image models (only when the user asks, or for cost)
 
 `gpt-image-2.5` via `-provider openai` is the default image model (OpenAI id
-`gpt-image-2.5-flare`; `-model gpt-image-2` picks the previous generation).
-It takes the same size, quality, background, moderation, and output-format
+`gpt-image-2.5-flare`, fast everyday 2.5). `-model gpt-image-2.5-sunburst`
+(alias `sunburst`) is GPT Image 2.5 Sunburst, the larger 2.5 model.
+`-model gpt-image-2` picks the previous generation.
+They take the same size, quality (`low` / `medium` / `high` / `xhigh` /
+`max` / `auto`), background, moderation, and output-format
 parameters as `gpt-image-2`. Two Replicate models
 cover what it does poorly; both take references via `-input-image`, produce one
 image per request, ignore `-quality`/`-background`/`-moderation`, and reject

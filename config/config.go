@@ -61,10 +61,17 @@ number_of_images = 1
 # Models. Each entry maps a logical key (used with -model) to the
 # provider-specific model identifier. Add more as you go.
 
-# gpt-image-2.5 via the OpenAI Image API. The default: -model gpt-image-2.5
-# resolves to the gpt-image-2.5-flare id.
+# gpt-image-2.5 Flare via the OpenAI Image API. The default: -model gpt-image-2.5
+# resolves to the gpt-image-2.5-flare id. Fast everyday 2.5.
 [models.gpt-image-2.5]
 openai_name = "gpt-image-2.5-flare"
+
+# GPT Image 2.5 Sunburst, the larger 2.5 model. Higher quality, longer
+# generation. -model gpt-image-2.5-sunburst or -model sunburst.
+[models.gpt-image-2.5-sunburst]
+openai_name = "gpt-image-2.5-sunburst"
+[models.sunburst]
+openai_name = "gpt-image-2.5-sunburst"
 
 # gpt-image-2, the previous generation. Same request surface as 2.5; select it
 # explicitly with -model gpt-image-2 when you want the older look.
@@ -132,6 +139,8 @@ replicate_name = "topazlabs/image-upscale"
 // files working as new models land. Keep in sync with DefaultTOML.
 var builtinModels = map[string]ModelConfig{
 	"gpt-image-2.5":          {OpenAIName: "gpt-image-2.5-flare"},
+	"gpt-image-2.5-sunburst": {OpenAIName: "gpt-image-2.5-sunburst"},
+	"sunburst":               {OpenAIName: "gpt-image-2.5-sunburst"},
 	"gpt-image-2":            {OpenAIName: "gpt-image-2", ReplicateName: "openai/gpt-image-2"},
 	"flux-2-pro":             {ReplicateName: "black-forest-labs/flux-2-pro"},
 	"nano-banana-2":          {ReplicateName: "google/nano-banana-2"},

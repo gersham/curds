@@ -121,7 +121,7 @@ supports.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
-| openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`) | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
+| openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`; Sunburst via `-model gpt-image-2.5-sunburst`) | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
 | replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
@@ -147,10 +147,13 @@ curds -input-image lounge.png -mask mask.png \
 ## Image models
 
 `gpt-image-2.5` (`-model gpt-image-2.5`, OpenAI id `gpt-image-2.5-flare`) is
-the default image model. It takes the same request surface as `gpt-image-2` —
-the same `-size` / `-aspect-ratio` grid, `-quality`, `-background`,
-`-moderation`, `-output-format` and `-output-compression` — so everything
-below applies to it unchanged. `gpt-image-2` (`-model gpt-image-2`) remains
+the default image model: fast everyday GPT Image 2.5. **Sunburst**
+(`-model gpt-image-2.5-sunburst` or `-model sunburst`, OpenAI id
+`gpt-image-2.5-sunburst`) is the larger 2.5 model — higher quality, longer
+generation. Both take the same request surface as `gpt-image-2` — the same
+`-size` / `-aspect-ratio` grid, `-quality` (`low` / `medium` / `high` /
+`xhigh` / `max` / `auto`), `-background`, `-moderation`, `-output-format`
+and `-output-compression`. `gpt-image-2` (`-model gpt-image-2`) remains
 selectable for the previous generation's look.
 
 Two Replicate-hosted models cover cases the OpenAI models handle poorly:
@@ -456,6 +459,9 @@ number_of_images = 1
 
 [models.gpt-image-2.5]
 openai_name = "gpt-image-2.5-flare"
+
+[models.gpt-image-2.5-sunburst]
+openai_name = "gpt-image-2.5-sunburst"
 
 [models.gpt-image-2]
 openai_name = "gpt-image-2"

@@ -47,6 +47,9 @@ type openAIImageResponse struct {
 }
 
 func (p *OpenAIProvider) Generate(ctx context.Context, req *Request) (*Result, error) {
+	if IsOpenAITTSModel(req.Model) {
+		return p.callSpeech(ctx, req)
+	}
 	size := ResolveSize(req)
 	logInfo(req, "generation.started",
 		"provider", "openai",
@@ -210,6 +213,77 @@ func jpegToPNG(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// openAISpeechError is the JSON body the speech endpoint returns on failure.
+type openAISpeechError struct {
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+	} `json:"error"`
+}
+
+// callSpeech renders text through OpenAI's POST /v1/audio/speech endpoint. The
+// response body IS the audio file (no URL, no base64), so the bytes go
+// straight into Result.Audios with the container curds requested.
+func (p *OpenAIProvider) callSpeech(ctx context.Context, req *Request) (*Result, error) {
+	logInfo(req, "generation.started",
+		"provider", "openai",
+		"model", req.Model,
+		"text_chars", len(req.Prompt),
+		"voice", req.Voice,
+		"format", req.OutputFormat,
+	)
+	body := map[string]any{
+		"model":           req.Model,
+		"input":           req.Prompt,
+		"voice":           req.Voice,
+		"response_format": req.OutputFormat,
+	}
+	if req.Speed > 0 {
+		body["speed"] = req.Speed
+	}
+	if req.Instructions != "" {
+		body["instructions"] = req.Instructions
+	}
+
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := p.base() + "/audio/speech"
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	hreq.Header.Set("Authorization", "Bearer "+req.Token)
+	hreq.Header.Set("Content-Type", "application/json")
+	logInfo(req, "openai.request", "endpoint", endpoint, "kind", "speech")
+	logDebug(req, "openai.request_body", "body", truncate(string(buf), 500))
+
+	resp, err := httpClientOrDefault(p.HTTPClient).Do(hreq)
+	if err != nil {
+		logError(req, "openai.transport_error", "err", err.Error())
+		return nil, err
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(resp.Body)
+	logInfo(req, "openai.response", "status_code", resp.StatusCode, "bytes", len(rb))
+	if resp.StatusCode >= 400 {
+		msg := strings.TrimSpace(string(rb))
+		var apiErr openAISpeechError
+		if json.Unmarshal(rb, &apiErr) == nil && apiErr.Error != nil && apiErr.Error.Message != "" {
+			msg = apiErr.Error.Message
+		}
+		logError(req, "openai.api_error", "status_code", resp.StatusCode, "body", truncate(string(rb), 500))
+		return nil, fmt.Errorf("openai API %d: %s", resp.StatusCode, msg)
+	}
+	if len(rb) == 0 {
+		return nil, errors.New("openai speech returned no audio")
+	}
+	logInfo(req, "audio.received", "bytes", len(rb), "format", req.OutputFormat)
+	return &Result{Audios: []Audio{{Bytes: rb, Format: req.OutputFormat}}}, nil
 }
 
 func (p *OpenAIProvider) do(hreq *http.Request, req *Request) (*Result, error) {

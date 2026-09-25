@@ -376,6 +376,10 @@ func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
 // per-model builders below do the mapping.
 func buildReplicateAudioInput(req *Request) (map[string]any, error) {
 	switch {
+	case IsTTSSpeechModel(req.Model):
+		return buildReplicateSpeechInput(req), nil
+	case IsTTSElevenLabsModel(req.Model):
+		return buildReplicateElevenLabsTTSInput(req), nil
 	case IsMusicModel(req.Model):
 		return buildReplicateMusicInput(req), nil
 	case IsMusicVocalModel(req.Model):
@@ -439,6 +443,55 @@ func buildReplicateMusicVocalInput(req *Request) map[string]any {
 		input["lyrics"] = req.Lyrics
 	} else if !instrumental {
 		input["lyrics_optimizer"] = true
+	}
+	return input
+}
+
+// buildReplicateSpeechInput builds the input for minimax/speech-2.8-hd: the
+// text, a voice id (free-form — system voices and cloned ids both work), the
+// delivery knobs it accepts, and CD-grade output (44.1 kHz; 256 kbps for mp3,
+// which WAV does not carry). English normalization stays on so numbers and
+// dates read naturally.
+func buildReplicateSpeechInput(req *Request) map[string]any {
+	input := map[string]any{
+		"text":                  req.Prompt,
+		"voice_id":              req.Voice,
+		"audio_format":          req.OutputFormat,
+		"sample_rate":           44100,
+		"english_normalization": true,
+	}
+	if req.OutputFormat == "mp3" {
+		input["bitrate"] = 256000
+	}
+	if req.Emotion != "" {
+		input["emotion"] = req.Emotion
+	}
+	if req.Speed > 0 {
+		input["speed"] = req.Speed
+	}
+	if req.Pitch != 0 {
+		input["pitch"] = req.Pitch
+	}
+	return input
+}
+
+// buildReplicateElevenLabsTTSInput builds the input for elevenlabs/v3: the
+// text goes in `prompt`, plus the voice and the optional stability/style/speed
+// knobs. The model returns mp3; a wav request is transcoded after download,
+// like stable-audio-2.5's container mismatch.
+func buildReplicateElevenLabsTTSInput(req *Request) map[string]any {
+	input := map[string]any{
+		"prompt": req.Prompt,
+		"voice":  req.Voice,
+	}
+	if req.Speed > 0 {
+		input["speed"] = req.Speed
+	}
+	if req.Stability != nil {
+		input["stability"] = *req.Stability
+	}
+	if req.Style != nil {
+		input["style"] = *req.Style
 	}
 	return input
 }

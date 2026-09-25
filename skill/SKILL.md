@@ -1,6 +1,6 @@
 ---
 name: curds
-description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, generate music or sound effects, remove image backgrounds, or upscale images through OpenAI or Replicate.
+description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, generate music, sound effects, or spoken audio (text to speech), remove image backgrounds, or upscale images through OpenAI or Replicate.
 model: haiku
 ---
 
@@ -43,6 +43,12 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   Audio output is `mp3`, or `wav` when `-output` ends in `.wav`; an audio
   format without an audio model is rejected. Audio models are Replicate-only
   and need a prompt (`music-vocal` also accepts lyrics alone).
+- Text to speech: `-model tts` (MiniMax Speech 2.8 HD, the default; `-voice`
+  free-form, plus `-emotion` / `-speed` / `-pitch`), `-model tts-elevenlabs`
+  (ElevenLabs v3; inline tags like `[sarcastic]` in the text, plus
+  `-stability` / `-style`, enum `-voice`), `-model tts-openai` /
+  `-model tts-1-hd` (OpenAI speech; enum `-voice`, and `-instructions` on
+  `tts-openai` only). Read the text from `-prompt` or stdin.
 
 ## Commands
 
@@ -64,6 +70,12 @@ curds -no-tui -model nano-banana-2 -image-resolution 4k -input-image a.png,b.png
 curds -no-tui -model music -duration 45 -prompt "$PROMPT" -output "$OUT.mp3"
 curds -no-tui -model music-vocal -lyrics @song.txt -prompt "$PROMPT" -output "$OUT.mp3"
 curds -no-tui -model sfx -duration 8 -prompt "$PROMPT" -output "$OUT.wav"
+
+# Text to speech (only when asked; delivery goes in the text/flags)
+curds -no-tui -model tts -voice English_Wiselady -emotion calm -prompt "$PROMPT" -output "$OUT.mp3"
+curds -no-tui -model tts-elevenlabs -voice Rachel -prompt "[sarcastic] $PROMPT" -output "$OUT.mp3"
+curds -no-tui -model tts-openai -voice sage -instructions "crisp British RP, dry" -prompt "$PROMPT" -output "$OUT.wav"
+cat script.txt | curds -no-tui -model tts -output "$OUT.wav"
 
 # Background removal (transparent PNG cutout)
 curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
@@ -100,5 +112,6 @@ cancellation. Report the exact blocker instead of retrying interactively.
 Only when the request needs something beyond the commands above — custom
 `-size`, 4K aspect ratios, masks/inpainting, output formats and compression,
 Grok/Seedance duration-resolution-aspect matrices, Seedance-only flags,
-`-instrumental` / `-lyrics` / audio containers, the music-vocal local trim —
-read `reference.md` in this skill directory.
+`-instrumental` / `-lyrics` / audio containers, the music-vocal local trim,
+`-voice` / `-emotion` / `-speed` / `-pitch` / `-instructions` / `-stability` /
+`-style` — read `reference.md` in this skill directory.

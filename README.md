@@ -5,10 +5,12 @@
 ![curds in action](docs/curds-preview.png)
 
 Generate images from the command line via OpenAI's gpt-image-2.5 (direct, the
-default), or images/videos/music/audio via Replicate-hosted models such as Grok
+default), or images/videos/music/speech via Replicate-hosted models such as Grok
 Imagine Video 1.5, Seedance 2.0, Kling 3.0, ElevenLabs Music (`-model music`),
 MiniMax Music 2.6 (`-model music-vocal`), Stable Audio 2.5 (`-model sfx`) for
-sound effects, and the talking-head pair Kling Avatar 2.0
+sound effects, MiniMax Speech 2.8 HD (`-model tts`) and ElevenLabs v3
+(`-model tts-elevenlabs`) for text-to-speech (OpenAI's gpt-4o-mini-tts via
+`-model tts-openai`), and the talking-head pair Kling Avatar 2.0
 (`-model kling-avatar`) and Sync Labs lipsync-2-pro (`-model lipsync`). Also
 wraps Replicate's `bria/remove-background`
 for one-shot transparent-PNG cutouts (`-model remove-bg`) and
@@ -127,8 +129,8 @@ supports.
 
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
-| openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`; Sunburst via `-model gpt-image-2.5-sunburst`) | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
-| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` (talking heads: `kwaivgi/kling-avatar-v2`, `sync/lipsync-2-pro`) | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`); `curds run` posts raw inputs to the same endpoint |
+| openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`; Sunburst via `-model gpt-image-2.5-sunburst`); speech: `gpt-4o-mini-tts` (`-model tts-openai`), `tts-1-hd` | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`); `/v1/audio/speech` for TTS |
+| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` (talking heads: `kwaivgi/kling-avatar-v2`, `sync/lipsync-2-pro`); audio: `elevenlabs/music`, `minimax/music-2.6`, `stability-ai/stable-audio-2.5`; speech: `minimax/speech-2.8-hd`, `elevenlabs/v3` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`); `curds run` posts raw inputs to the same endpoint |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
 ## Editing / composing with reference images
@@ -443,6 +445,66 @@ Notes:
 For any other audio model on Replicate, use the raw passthrough:
 `curds run OWNER/MODEL key=value …` (see below).
 
+
+## Text to speech
+
+Three TTS models read `-prompt` (or stdin) aloud, all saving `mp3` or `wav`:
+
+- `tts` — **MiniMax Speech 2.8 HD** (`minimax/speech-2.8-hd`), the default TTS
+  model. Natural narration from up to 10000 characters (with `<#0.5#>`
+  pause markers). `-voice` takes any system voice id or a cloned id (default
+  `English_Wiselady`); `-emotion` (default `auto`), `-speed` (0.5–2), and
+  `-pitch` (−12..12) tune the delivery. curds asks for 44.1 kHz output
+  (256 kbps mp3) and turns on English normalization so numbers and dates read
+  naturally.
+- `tts-elevenlabs` — **ElevenLabs v3** (`elevenlabs/v3`). The expressive
+  option: inline audio tags like `[sarcastic]`, `[whispers]`, or `[laughs]`
+  go in the text, and `-stability` (0–1, default 0.5) and `-style` (0–1,
+  default 0) tune the voice. `-voice` picks from the enum (default `Rachel`).
+  It returns mp3; a `.wav` output is transcoded locally via ffmpeg.
+- `tts-openai` — **OpenAI gpt-4o-mini-tts**, served by the `openai` provider's
+  `POST /v1/audio/speech`. `-instructions` steers accent and tone (`"crisp
+  British RP, dry"`); `-voice` picks from the OpenAI enum (default `sage`).
+  `tts-1-hd` is the earlier model on the same endpoint and takes no
+  `-instructions`. Text is capped at 4096 characters.
+
+```bash
+# Narration line with a voice and emotion
+curds -model tts -voice English_Deep-VoicedGentleman -emotion calm \
+      -prompt "Chapter one. The rain had not stopped for a week." -output /tmp/line.mp3
+
+# ElevenLabs v3 with an inline tag (delivery is in the text)
+curds -model tts-elevenlabs -voice Rachel \
+      -prompt "[sarcastic] Oh, brilliant. Another Monday." -output /tmp/line.mp3
+
+# OpenAI with delivery instructions
+curds -model tts-openai -voice sage -instructions "crisp British RP, dry" \
+      -prompt "The results, I'm afraid, are conclusive." -output /tmp/line.wav
+
+# Read a whole script from a file
+cat script.txt | curds -model tts -output /tmp/narration.wav
+```
+
+Notes:
+
+- `tts`/`tts-elevenlabs` need a Replicate token; `tts-openai`/`tts-1-hd` need
+  an OpenAI token. An explicit incompatible `-provider`/`-model` pair is
+  rejected locally.
+- `-voice` is validated against the enum for `tts-elevenlabs` and the OpenAI
+  models; `tts` accepts cloned ids, so it is free-form.
+- Flags that do not apply to the chosen model are usage errors (exit 2):
+  `-emotion`/`-pitch` belong to `tts`, `-stability`/`-style` to
+  `tts-elevenlabs`, and `-instructions` to `tts-openai`.
+- `-speed` has a per-model range: `tts` 0.5–2, `tts-elevenlabs` 0.7–1.2,
+  `tts-openai` 0.25–4. `0` means the model's own default.
+- List MiniMax voices with `curds run -schema minimax/speech-2.8-hd`.
+
+ElevenLabs voices: Rachel, Drew, Clyde, Paul, Aria, Domi, Dave, Roger, Fin,
+Sarah, James, Jane, Juniper, Arabella, Hope, Bradford, Reginald, Gaming,
+Austin, Kuon, Blondie, Priyanka, Alexandra, Monika, Mark, Grimblewood.
+OpenAI voices: alloy, ash, ballad, coral, echo, fable, onyx, nova, sage,
+shimmer, verse, marin, cedar.
+
 ## Raw Replicate passthrough (`curds run`)
 
 `curds run` creates one prediction on any Replicate model with exactly the
@@ -572,6 +634,9 @@ Nano Banana 2 accepts `match_input_image`, `1:1`, `1:4`, `1:8`, `2:3`,
 MiniMax H3 accepts `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, and
 `adaptive`.
 
+Music, sound-effect, and text-to-speech models take no `-aspect-ratio`
+(audio has no frame); `-size` and `-quality` are not sent either.
+
 For something custom, pass `-size WxH`. Anything not on a 16-pixel
 boundary is rounded to the nearest valid value (true 1080p `1920×1080`
 becomes `1920×1088`, for example).
@@ -688,6 +753,9 @@ Run `curds -h` for the full list. Highlights:
 - `-reference-image` / `-reference-video` / `-reference-audio` — Seedance references
 - `-duration` / `-instrumental` / `-lyrics` — audio controls (`-model music`,
   `music-vocal`, `sfx`); `-lyrics` reads `@file.txt`
+- `-voice` / `-emotion` / `-speed` / `-pitch` / `-instructions` / `-stability`
+  / `-style` — text-to-speech controls (`-model tts`, `tts-elevenlabs`,
+  `tts-openai`)
 - `-scale` / `-face-enhance` — upscale factor and face restoration (`-model upscale`)
 - `-provider`, `-token`, `-model`
 - `-open` — open generated assets in OS viewer (macOS Preview)

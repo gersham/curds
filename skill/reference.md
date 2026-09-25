@@ -1,6 +1,6 @@
 # Curds CLI — full parameter reference
 
-Written from `curds --help` for version `0.4.0`; if the installed help text
+Written from `curds --help` for version `0.5.0`; if the installed help text
 differs, prefer the current `curds --help` output.
 
 ## Output formats
@@ -9,8 +9,8 @@ differs, prefer the current `curds --help` output.
 output file extension also drives the format unless the flag is set. For
 ordinary video generation, `.mp4` uses the current default video model unless
 `-provider` or `-model` overrides it; `.mp3`/`.wav` require an audio model
-(`-model music`, `music-vocal`, or `sfx`). OpenAI supports
-`-output-compression` for WebP and JPEG.
+(`-model music`, `music-vocal`, `sfx`, or the text-to-speech models). OpenAI
+supports `-output-compression` for WebP and JPEG.
 
 ## Image sizes and aspect ratios
 
@@ -189,6 +189,53 @@ curds -no-tui -model sfx -duration 8 -prompt "$PROMPT" -output "$OUT.wav"
 duration outside the model's range or an audio output format without an audio
 model.
 
+## Text to speech (only when the user asks)
+
+Prompt-in/audio-out (text from `-prompt` or stdin); no input media, no
+`-aspect-ratio` / `-size` / `-quality`. Output is `mp3` unless `-output` ends
+in `.wav`. `tts` / `tts-elevenlabs` need a Replicate token; `tts-openai` /
+`tts-1-hd` use the `openai` provider's `/v1/audio/speech`.
+
+`-model tts` (`minimax/speech-2.8-hd`, the default TTS model): narration up to
+10000 characters (supports `<#0.5#>` pause markers). `-voice` is a free-form
+voice id (system or cloned; default `English_Wiselady`);
+`-emotion` `auto|happy|sad|angry|fearful|disgusted|surprised|calm|fluent|
+neutral` (default `auto`); `-speed` 0.5–2; `-pitch` -12..12. curds asks for
+44.1 kHz output (256 kbps mp3) and English normalization.
+
+```bash
+curds -no-tui -model tts -voice English_Deep-VoicedGentleman -emotion calm -prompt "$PROMPT" -output "$OUT.mp3"
+```
+
+`-model tts-elevenlabs` (`elevenlabs/v3`): expressive TTS; inline audio tags
+like `[sarcastic]`, `[whispers]`, `[laughs]` go in the text. `-voice` is one of
+Rachel, Drew, Clyde, Paul, Aria, Domi, Dave, Roger, Fin, Sarah, James, Jane,
+Juniper, Arabella, Hope, Bradford, Reginald, Gaming, Austin, Kuon, Blondie,
+Priyanka, Alexandra, Monika, Mark, Grimblewood (default Rachel). `-speed`
+0.7–1.2, `-stability` 0–1 (default 0.5), `-style` 0–1 (default 0). Returns
+mp3; `.wav` is transcoded locally.
+
+```bash
+curds -no-tui -model tts-elevenlabs -voice Rachel -prompt "[sarcastic] $PROMPT" -output "$OUT.mp3"
+```
+
+`-model tts-openai` (`gpt-4o-mini-tts`, the OpenAI speech endpoint) and
+`-model tts-1-hd` (the earlier model, no `-instructions`). Text is capped at
+4096 characters. `-voice` is one of alloy, ash, ballad, coral, echo, fable,
+onyx, nova, sage, shimmer, verse, marin, cedar (default sage); `-speed`
+0.25–4. `-instructions` (accent/tone, e.g. `"crisp British RP, dry"`) is
+`tts-openai` only.
+
+```bash
+curds -no-tui -model tts-openai -voice sage -instructions "crisp British RP, dry" -prompt "$PROMPT" -output "$OUT.wav"
+cat script.txt | curds -no-tui -model tts -output "$OUT.wav"
+```
+
+`-emotion` / `-pitch` apply to `tts` only, `-stability` / `-style` to
+`tts-elevenlabs` only, and `-instructions` to `tts-openai`; anything else is a
+usage error (exit 2). List MiniMax voices with
+`curds run -schema minimax/speech-2.8-hd`.
+
 ## Raw Replicate passthrough (`curds run`)
 
 For models curds does not wrap (or when you need exact inputs):
@@ -245,6 +292,11 @@ curds -no-tui -provider replicate -model upscale -input-image small.jpg -scale 4
 2. `~/.config/curds/config.toml` or `$CURDS_CONFIG`
 3. `.env` in the current directory
 4. `OPENAI_API_KEY` (OpenAI) / `REPLICATE_API_TOKEN` (Replicate)
+
+Text-to-speech and music/sound-effect models bind to the provider that runs
+them (`tts`/`tts-elevenlabs`/`music`/`sfx` → Replicate,
+`tts-openai`/`tts-1-hd` → OpenAI), so an explicit incompatible
+`-provider`/`-model` pair is rejected locally.
 
 If both provider tokens are present and `-provider` is omitted, curds prefers
 OpenAI. `curds` has no `--version` flag; the startup log printed by

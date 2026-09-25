@@ -26,14 +26,20 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gersham/curds"
 	"github.com/gersham/curds/config"
 	"github.com/gersham/curds/tui"
 )
 
+// newClient builds the curds client the generation path talks to. It is a var
+// so tests can point it at httptest servers — the same reason Client keeps its
+// providers pluggable (and `curds run` has newRunProvider).
+var newClient = curds.New
+
 // version is the curds release version, reported by the curds.start log event.
-const version = "0.4.0"
+const version = "0.5.0"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -89,6 +95,13 @@ type cliOptions struct {
 	duration          float64
 	instrumental      bool
 	lyrics            string
+	voice             string
+	emotion           string
+	speed             float64
+	pitch             int
+	instructions      string
+	stability         float64 // TTS: -1 = model default
+	style             float64 // TTS: -1 = model default
 	pollInterval      time.Duration
 	timeout           time.Duration
 	verbose           bool
@@ -190,6 +203,11 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 				opts.provider = "xai"
 			case m.OpenAIName == "" && m.ReplicateName != "":
 				opts.provider = "replicate"
+			case m.ReplicateName == "" && m.XaiName == "" && m.OpenAIName != "":
+				// OpenAI-only models (gpt-image-2.5, tts-openai, tts-1-hd) must
+				// not be resolved against a replicate/xai provider that cannot
+				// run them.
+				opts.provider = "openai"
 			}
 		}
 	}
@@ -298,7 +316,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		"output", opts.outputPath,
 	)
 
-	res, err := curds.New().Generate(ctx, req)
+	res, err := newClient().Generate(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -507,7 +525,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		// terminal still shows curds.completed when the TUI exits.
 		libReq := buildLibRequest(opts, req.Token, resolvedModel, logsink)
 
-		res, err := curds.New().Generate(callCtx, libReq)
+		res, err := newClient().Generate(callCtx, libReq)
 		if err != nil {
 			return tui.GenerateResult{Err: err}
 		}
@@ -571,6 +589,13 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		Duration:          opts.duration,
 		Instrumental:      instrumentalFlag(opts),
 		Lyrics:            opts.lyrics,
+		Voice:             opts.voice,
+		Emotion:           opts.emotion,
+		Speed:             opts.speed,
+		Pitch:             opts.pitch,
+		Instructions:      opts.instructions,
+		Stability:         floatFlag(opts.stability, "stability"),
+		Style:             floatFlag(opts.style, "style"),
 		SyncMode:          opts.syncMode,
 		SyncTemperature:   opts.syncTemperature,
 		ActiveSpeaker:     opts.activeSpeaker,
@@ -717,6 +742,13 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.instrumental, "instrumental", true, "Music models: render an instrumental track (default: true for -model music, false for -model music-vocal; -lyrics implies vocals)")
 	flag.StringVar(&opts.lyrics, "lyrics", "", "Song lyrics for -model music-vocal: TEXT, or @file.txt (newlines and [Verse]/[Chorus] tags welcome)")
 	flag.Float64Var(&opts.duration, "duration", 0, "Audio length in seconds: -model music 5-300 (default 10); -model sfx 1-190 (default 10); -model music-vocal trims the render locally")
+	flag.StringVar(&opts.voice, "voice", "", "TTS voice: -model tts any voice id (default English_Wiselady); -model tts-elevenlabs a name from the enum (default Rachel); -model tts-openai a name from the enum (default sage)")
+	flag.StringVar(&opts.emotion, "emotion", "", "TTS delivery emotion for -model tts: auto, happy, sad, angry, fearful, disgusted, surprised, calm, fluent, neutral (default: auto)")
+	flag.Float64Var(&opts.speed, "speed", 0, "TTS speaking rate (0 = model default): -model tts 0.5-2; -model tts-elevenlabs 0.7-1.2; -model tts-openai 0.25-4")
+	flag.IntVar(&opts.pitch, "pitch", 0, "TTS pitch shift in semitones for -model tts: -12..12 (default: 0)")
+	flag.StringVar(&opts.instructions, "instructions", "", "TTS delivery steering for -model tts-openai (gpt-4o-mini-tts only), e.g. \"crisp British RP, dry\"")
+	flag.Float64Var(&opts.stability, "stability", -1, "TTS voice stability for -model tts-elevenlabs: 0-1 (default: 0.5)")
+	flag.Float64Var(&opts.style, "style", -1, "TTS style exaggeration for -model tts-elevenlabs: 0-1 (default: 0)")
 	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
 
 	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement (upscale models only)")
@@ -746,6 +778,15 @@ func parseFlags() (*cliOptions, error) {
 	}
 	if opts.duration < 0 {
 		return nil, &usageError{err: fmt.Errorf("-duration must be positive, got %g", opts.duration)}
+	}
+	if opts.speed < 0 {
+		return nil, &usageError{err: fmt.Errorf("-speed must be positive, got %g", opts.speed)}
+	}
+	if opts.stability < -1 || opts.stability > 1 {
+		return nil, &usageError{err: fmt.Errorf("-stability must be 0-1, got %v", opts.stability)}
+	}
+	if opts.style < -1 || opts.style > 1 {
+		return nil, &usageError{err: fmt.Errorf("-style must be 0-1, got %v", opts.style)}
 	}
 	return opts, nil
 }
@@ -901,7 +942,7 @@ func setupUsage() {
 // humans (man-page conventions, no Markdown noise on stdout).
 func helpText() string {
 	return `NAME
-  curds — generate images, videos, music, and sound effects from text prompts
+  curds — generate images, videos, music, sound effects, and speech from text prompts
 
 SYNOPSIS
   curds [flags]
@@ -914,7 +955,9 @@ DESCRIPTION
   Nano Banana 2 are also available), videos with Seedance 2.0 on Replicate (default
   for mp4; Kling 3.0, MiniMax H3, Grok Imagine Video also selectable),
   music and sound effects with ElevenLabs Music (-model music), MiniMax
-  Music 2.6 (-model music-vocal) and Stable Audio 2.5 (-model sfx),
+  Music 2.6 (-model music-vocal) and Stable Audio 2.5 (-model sfx), text to
+  speech with MiniMax Speech 2.8 HD (-model tts), ElevenLabs v3 (-model
+  tts-elevenlabs) and OpenAI gpt-4o-mini-tts (-model tts-openai),
   talking heads and lip-sync with Kling Avatar 2.0 (-model kling-avatar) and
   Sync Labs lipsync-2-pro (-model lipsync), removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
@@ -929,9 +972,12 @@ PROVIDERS
   openai     OpenAI Image API direct   [recommended for OpenAI models]
              Endpoints: POST /v1/images/generations
                         POST /v1/images/edits   (when -input-image or -mask is set)
+                        POST /v1/audio/speech   (for -model tts-openai / tts-1-hd)
              Default model: gpt-image-2.5 (id gpt-image-2.5-flare)
              Also available: -model gpt-image-2.5-sunburst (larger 2.5),
-                             -model gpt-image-2
+                             -model gpt-image-2,
+                             -model tts-openai (gpt-4o-mini-tts),
+                             -model tts-1-hd
              Why prefer this: lower latency, lower cost, full parameter
              surface (any valid -size, -output-compression, -user, etc.),
              and immediate b64_json responses (no polling).
@@ -943,6 +989,7 @@ PROVIDERS
              Also available: -model flux-2-pro, nano-banana-2,
                              kling-v3, kling-avatar, minimax-h3, lipsync,
                              music, music-vocal (alias minimax-music), sfx,
+                             tts, tts-elevenlabs,
                              grok-imagine-video-1.5, upscale-pro
              Raw passthrough: -model owner/name via the "curds run" subcommand
                               runs any Replicate model with caller-supplied
@@ -1170,6 +1217,38 @@ FLAGS
                                  Without -lyrics the model writes them from
                                  the prompt.
 
+  Text to speech
+    -model tts                   MiniMax Speech 2.8 HD
+                                 (minimax/speech-2.8-hd) on Replicate: the
+                                 default TTS model. Narration from -prompt,
+                                 with -voice, -emotion, -speed, and -pitch.
+    -model tts-elevenlabs        ElevenLabs v3 (elevenlabs/v3) on Replicate:
+                                 expressive TTS. Inline audio tags such as
+                                 [sarcastic] or [whispers] go in the text.
+    -model tts-openai            OpenAI gpt-4o-mini-tts via the openai
+                                 provider: accepts -instructions
+                                 ("crisp British RP, dry"). -model tts-1-hd
+                                 is the earlier model (no -instructions).
+    -voice NAME                  voice id/name (default: English_Wiselady /
+                                 Rachel / sage). -model tts takes any system
+                                 voice or cloned id; the other two validate
+                                 against their enums (see TEXT TO SPEECH).
+    -emotion VALUE               -model tts only: auto, happy, sad, angry,
+                                 fearful, disgusted, surprised, calm, fluent,
+                                 neutral (default: auto).
+    -speed N                     speaking rate (0 = model default):
+                                 -model tts 0.5-2; -model tts-elevenlabs
+                                 0.7-1.2; -model tts-openai 0.25-4.
+    -pitch N                     -model tts only: shift in semitones, -12..12
+                                 (default: 0).
+    -instructions TEXT           -model tts-openai (gpt-4o-mini-tts) only:
+                                 delivery steering, e.g. "crisp British RP,
+                                 dry".
+    -stability N                 -model tts-elevenlabs only: voice stability
+                                 0-1 (default: 0.5).
+    -style N                     -model tts-elevenlabs only: style
+                                 exaggeration 0-1 (default: 0).
+
 MUSIC & SOUND EFFECTS
   Three Replicate models turn a prompt into audio; all save mp3 or wav and
   require -no-tui (or a prompt) like any other model.
@@ -1201,6 +1280,50 @@ MUSIC & SOUND EFFECTS
   -aspect-ratio, -size, -quality, -background, and -moderation are ignored by
   audio models (not sent). For any other audio model on Replicate use the raw
   passthrough: curds run OWNER/MODEL key=value ...
+
+
+TEXT TO SPEECH
+  Three models read -prompt (or stdin) aloud; all save mp3 or wav and require
+  -no-tui (or a prompt) like any other model.
+
+  -model tts            MiniMax Speech 2.8 HD (minimax/speech-2.8-hd) on
+                        Replicate is the default TTS model: natural narration
+                        from up to 10000 characters, with <#0.5#> pause
+                        markers. -voice takes any system voice id or a cloned
+                        id (default English_Wiselady); -emotion, -speed
+                        (0.5-2), and -pitch (-12..12) tune the delivery. curds
+                        asks for 44.1 kHz output (256 kbps mp3) and turns on
+                        English normalization so numbers and dates read
+                        naturally.
+  -model tts-elevenlabs  ElevenLabs v3 (elevenlabs/v3) on Replicate is the
+                        expressive option: inline audio tags like [sarcastic],
+                        [whispers], or [laughs] in the text, with -stability
+                        and -style per voice. -voice picks from the enum below
+                        (default Rachel). It returns mp3; a .wav -output is
+                        transcoded locally via ffmpeg.
+  -model tts-openai     OpenAI gpt-4o-mini-tts via the openai provider's
+                        POST /v1/audio/speech endpoint. -instructions steers
+                        accent and tone ("crisp British RP, dry"); -voice
+                        picks from the OpenAI enum (default sage). -model
+                        tts-1-hd is the earlier model on the same endpoint and
+                        takes no -instructions. Text is capped at 4096
+                        characters.
+
+  -voice values:
+    elevenlabs/v3        Rachel, Drew, Clyde, Paul, Aria, Domi, Dave, Roger,
+                        Fin, Sarah, James, Jane, Juniper, Arabella, Hope,
+                        Bradford, Reginald, Gaming, Austin, Kuon, Blondie,
+                        Priyanka, Alexandra, Monika, Mark, Grimblewood
+    OpenAI speech        alloy, ash, ballad, coral, echo, fable, onyx, nova,
+                        sage, shimmer, verse, marin, cedar
+    minimax/speech-2.8-hd  any system voice id or cloned id; list them with
+                        curds run -schema minimax/speech-2.8-hd
+
+  Flags that do not apply to the chosen TTS model are usage errors (exit 2):
+  -emotion / -pitch belong to -model tts, -stability / -style to
+  -model tts-elevenlabs, and -instructions to -model tts-openai. -speed and
+  -voice apply to all three, each with its own range and enum. Pipe a script
+  in: cat script.txt | curds -model tts -output line.wav
 
 RUN SUBCOMMAND
   curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]
@@ -1243,7 +1366,7 @@ ASPECT RATIOS
   Kling 3.0 accepts:                    16:9, 9:16, 1:1
   Kling Avatar 2.0, lipsync accept:    no -aspect-ratio — the portrait or
                                        source video defines the frame
-  music, music-vocal, sfx accept:      no -aspect-ratio — audio has no frame
+  music, sfx, tts models accept:       no -aspect-ratio — audio has no frame
                                        (-size / -quality are ignored too)
   FLUX.2 [pro] accepts:                 match_input_image, 1:1, 16:9,
                                        3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3
@@ -1403,6 +1526,24 @@ EXAMPLES
   curds -model sfx -duration 8 \
         -prompt "steady heavy rain on a tin roof, distant thunder" \
         -output /tmp/rain.wav
+
+  # Narration line with a voice and emotion (MiniMax Speech 2.8 HD)
+  curds -model tts -voice English_Deep-VoicedGentleman -emotion calm \
+        -prompt "Chapter one. The rain had not stopped for a week." \
+        -output /tmp/line.mp3
+
+  # ElevenLabs v3 with an inline audio tag (delivery is in the text)
+  curds -model tts-elevenlabs -voice Rachel \
+        -prompt "[sarcastic] Oh, brilliant. Another Monday." \
+        -output /tmp/line.mp3
+
+  # OpenAI gpt-4o-mini-tts with delivery instructions
+  curds -model tts-openai -voice sage -instructions "crisp British RP, dry" \
+        -prompt "The results, I'm afraid, are conclusive." \
+        -output /tmp/line.wav
+
+  # Read a whole script from a file
+  cat script.txt | curds -model tts -output /tmp/narration.wav
 
   # Any other audio model, raw inputs (see "curds run -h")
   curds run -schema owner/audio-model
@@ -2001,19 +2142,36 @@ func instrumentalFlag(opts *cliOptions) *bool {
 	return &v
 }
 
+// floatFlag reads a float flag only when the user passed it, so the library
+// can treat nil as "model default" (0 is a valid -stability / -style value).
+func floatFlag(v float64, name string) *float64 {
+	if !flagWasSet(name) {
+		return nil
+	}
+	return &v
+}
+
 // validateAudioFlags enforces the audio contract before any network call: an
 // mp3/wav output needs an audio model, -lyrics belongs to -model music-vocal,
-// and -duration has to sit inside the model's own range. Each failure is a
-// usage error (exit 2) naming the flag.
+// -duration has to sit inside the model's own range, and the TTS delivery
+// flags (voice, emotion, speed, pitch, instructions, stability, style) belong
+// to a text-to-speech model. Each failure is a usage error (exit 2) naming the
+// flag.
 func validateAudioFlags(model string, opts *cliOptions) error {
+	if !curds.IsTTSModel(model) && hasTTSFlags(opts) {
+		return errors.New("-voice, -emotion, -speed, -pitch, -instructions, -stability, and -style need a text-to-speech model: pass -model tts, -model tts-elevenlabs, or -model tts-openai")
+	}
 	if !curds.IsAudioModel(model) {
 		if opts.outputFormat == "mp3" || opts.outputFormat == "wav" {
-			return fmt.Errorf("-output-format %s needs an audio model: pass -model music, -model music-vocal, or -model sfx", opts.outputFormat)
+			return fmt.Errorf("-output-format %s needs an audio model: pass -model music, -model music-vocal, -model sfx, or a text-to-speech model", opts.outputFormat)
 		}
 		if strings.TrimSpace(opts.lyrics) != "" {
 			return errors.New("-lyrics is only supported by -model music-vocal")
 		}
 		return nil
+	}
+	if curds.IsTTSModel(model) {
+		return validateTTSFlags(model, opts)
 	}
 	if strings.TrimSpace(opts.lyrics) != "" && !curds.IsMusicVocalModel(model) {
 		return fmt.Errorf("-lyrics is only supported by -model music-vocal (%s renders instrumentals)", model)
@@ -2030,6 +2188,99 @@ func validateAudioFlags(model string, opts *cliOptions) error {
 	case curds.IsMusicVocalModel(model):
 		if opts.duration != 0 && opts.duration < 1 {
 			return fmt.Errorf("-duration must be at least 1 second for -model music-vocal, got %g", opts.duration)
+		}
+	}
+	return nil
+}
+
+// hasTTSFlags reports whether the caller passed any of the TTS-only flags.
+// -stability / -style are detected by flag presence because 0 is a valid
+// value for both.
+func hasTTSFlags(opts *cliOptions) bool {
+	return strings.TrimSpace(opts.voice) != "" || strings.TrimSpace(opts.emotion) != "" ||
+		opts.speed != 0 || opts.pitch != 0 || strings.TrimSpace(opts.instructions) != "" ||
+		flagWasSet("stability") || flagWasSet("style")
+}
+
+// validateTTSFlags checks the text-to-speech contract per model: miniMax's
+// emotion/speed/pitch, ElevenLabs' stability/style, and OpenAI's
+// instructions (gpt-4o-mini-tts only). Voices are validated against the
+// model's enum (MiniMax voice ids are free-form, so cloned ids work), and the
+// per-model text cap is enforced before any request.
+func validateTTSFlags(model string, opts *cliOptions) error {
+	if opts.duration != 0 {
+		return errors.New("-duration is only supported by the music and sfx models; text-to-speech runs as long as the text")
+	}
+	if flagWasSet("instrumental") {
+		return errors.New("-instrumental is only supported by the music models")
+	}
+	if strings.TrimSpace(opts.lyrics) != "" {
+		return errors.New("-lyrics is only supported by -model music-vocal")
+	}
+	textLen := utf8.RuneCountInString(opts.prompt)
+	switch {
+	case curds.IsTTSSpeechModel(model):
+		if opts.instructions != "" {
+			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+		}
+		if flagWasSet("stability") || flagWasSet("style") {
+			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
+		}
+		if opts.emotion != "" && !curds.MinimaxTTSEmotions[opts.emotion] {
+			return fmt.Errorf("-emotion must be one of %s, got %q", curds.SortedNames(curds.MinimaxTTSEmotions), opts.emotion)
+		}
+		if opts.speed != 0 && (opts.speed < 0.5 || opts.speed > 2) {
+			return fmt.Errorf("-speed must be 0.5-2 for -model tts, got %g", opts.speed)
+		}
+		if opts.pitch < -12 || opts.pitch > 12 {
+			return fmt.Errorf("-pitch must be -12..12 for -model tts, got %d", opts.pitch)
+		}
+		if textLen > curds.MaxTTSTextChars {
+			return fmt.Errorf("text is %d characters; -model tts accepts at most %d", textLen, curds.MaxTTSTextChars)
+		}
+	case curds.IsTTSElevenLabsModel(model):
+		if opts.instructions != "" {
+			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+		}
+		if opts.emotion != "" {
+			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if opts.pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if opts.speed != 0 && (opts.speed < 0.7 || opts.speed > 1.2) {
+			return fmt.Errorf("-speed must be 0.7-1.2 for -model tts-elevenlabs, got %g", opts.speed)
+		}
+		if opts.stability > 1 {
+			return fmt.Errorf("-stability must be 0-1 for -model tts-elevenlabs, got %g", opts.stability)
+		}
+		if opts.style > 1 {
+			return fmt.Errorf("-style must be 0-1 for -model tts-elevenlabs, got %g", opts.style)
+		}
+		if opts.voice != "" && !curds.ElevenLabsTTSVoices[opts.voice] {
+			return fmt.Errorf("-voice %q is not a valid -model tts-elevenlabs voice (valid: %s)", opts.voice, curds.SortedNames(curds.ElevenLabsTTSVoices))
+		}
+	case curds.IsOpenAITTSModel(model):
+		if opts.emotion != "" {
+			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if opts.pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if flagWasSet("stability") || flagWasSet("style") {
+			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
+		}
+		if opts.speed != 0 && (opts.speed < 0.25 || opts.speed > 4) {
+			return fmt.Errorf("-speed must be 0.25-4 for -model tts-openai, got %g", opts.speed)
+		}
+		if opts.voice != "" && !curds.OpenAITTSVoices[opts.voice] {
+			return fmt.Errorf("-voice %q is not a valid OpenAI speech voice (valid: %s)", opts.voice, curds.SortedNames(curds.OpenAITTSVoices))
+		}
+		if opts.instructions != "" && !curds.IsOpenAITTSMiniModel(model) {
+			return fmt.Errorf("-instructions is only supported by gpt-4o-mini-tts, not %s", model)
+		}
+		if textLen > curds.MaxOpenAITTSChars {
+			return fmt.Errorf("text is %d characters; -model tts-openai accepts at most %d", textLen, curds.MaxOpenAITTSChars)
 		}
 	}
 	return nil

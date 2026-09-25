@@ -152,6 +152,29 @@ replicate_name = "minimax/music-2.6"
 [models.sfx]
 replicate_name = "stability-ai/stable-audio-2.5"
 
+# MiniMax Speech 2.8 HD via Replicate (-model tts). Default text-to-speech
+# model: natural narration from -prompt, with -voice (system or cloned id),
+# -emotion, -speed, and -pitch, in mp3 or wav at 44.1 kHz.
+[models.tts]
+replicate_name = "minimax/speech-2.8-hd"
+
+# ElevenLabs v3 via Replicate (-model tts-elevenlabs). Expressive
+# text-to-speech with inline audio tags in the text ([whispers], [laughs]) and
+# -stability / -style. Returns mp3; a .wav -output is transcoded locally.
+[models.tts-elevenlabs]
+replicate_name = "elevenlabs/v3"
+
+# OpenAI speech direct (-model tts-openai), served by the openai provider's
+# POST /v1/audio/speech endpoint. gpt-4o-mini-tts accepts -instructions
+# ("crisp British RP, dry") as well as -voice and -speed.
+[models.tts-openai]
+openai_name = "gpt-4o-mini-tts"
+
+# OpenAI's earlier speech model (-model tts-1-hd), same endpoint, no
+# -instructions knob.
+[models.tts-1-hd]
+openai_name = "tts-1-hd"
+
 # Segmentation / background removal. Replicate-only. Returns a transparent
 # PNG matching the input image's dimensions. Use with -input-image.
 [models.remove-bg]
@@ -191,6 +214,10 @@ var builtinModels = map[string]ModelConfig{
 	"music-vocal":            {ReplicateName: "minimax/music-2.6"},
 	"minimax-music":          {ReplicateName: "minimax/music-2.6"},
 	"sfx":                    {ReplicateName: "stability-ai/stable-audio-2.5"},
+	"tts":                    {ReplicateName: "minimax/speech-2.8-hd"},
+	"tts-elevenlabs":         {ReplicateName: "elevenlabs/v3"},
+	"tts-openai":             {OpenAIName: "gpt-4o-mini-tts"},
+	"tts-1-hd":               {OpenAIName: "tts-1-hd"},
 	"upscale":                {ReplicateName: "nightmareai/real-esrgan"},
 }
 

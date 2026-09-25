@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -102,6 +103,36 @@ const (
 	// DefaultSFXDuration is the length curds asks Stable Audio for when
 	// -duration is omitted, in seconds.
 	DefaultSFXDuration = 10
+
+	// TTSSpeechModel is MiniMax Speech 2.8 HD on Replicate and the default
+	// text-to-speech model: natural narration from text, with a voice id, an
+	// emotion, speed, pitch, and an mp3/wav container. Selectable via
+	// -model tts.
+	TTSSpeechModel = "minimax/speech-2.8-hd"
+
+	// TTSElevenLabsModel is ElevenLabs v3 on Replicate: expressive
+	// text-to-speech, with inline audio tags ([whispers], [laughs]) in the
+	// text and per-voice stability/style. Selectable via -model tts-elevenlabs.
+	TTSElevenLabsModel = "elevenlabs/v3"
+
+	// TTSOpenAIModel is OpenAI's gpt-4o-mini-tts speech model, served by the
+	// openai provider's POST /v1/audio/speech endpoint. It is the one speech
+	// model that accepts delivery instructions ("crisp British RP, dry").
+	// Selectable via -model tts-openai.
+	TTSOpenAIModel = "gpt-4o-mini-tts"
+
+	// TTS1HDModel is OpenAI's earlier tts-1-hd speech model, also served by
+	// POST /v1/audio/speech. It has no -instructions knob. Selectable via
+	// -model tts-1-hd.
+	TTS1HDModel = "tts-1-hd"
+
+	// TTS defaults: the voice curds asks for when -voice is omitted, and the
+	// per-model text caps enforced before any network call.
+	DefaultTTSVoice           = "English_Wiselady"
+	DefaultTTSElevenLabsVoice = "Rachel"
+	DefaultTTSOpenAIVoice     = "sage"
+	MaxTTSTextChars           = 10000 // minimax/speech-2.8-hd
+	MaxOpenAITTSChars         = 4096  // openai POST /v1/audio/speech
 
 	// FluxImageModel is FLUX.2 [pro] on Replicate: fast, cheap image generation
 	// with reference-image control. Uses megapixel resolutions, not sizes.
@@ -209,6 +240,29 @@ type Request struct {
 	// -lyrics @file.txt); [Verse]/[Chorus] tags and newlines pass through.
 	// Only -model music-vocal accepts it.
 	Lyrics string
+	// Voice is the voice for a TTS model. minimax/speech-2.8-hd accepts any
+	// system voice id or a cloned id (free-form); elevenlabs/v3 and the OpenAI
+	// speech models take a name from their own enum. Empty = model default.
+	Voice string
+	// Emotion is minimax/speech-2.8-hd's delivery emotion (auto, happy, sad,
+	// angry, fearful, disgusted, surprised, calm, fluent, neutral). Empty =
+	// auto. Rejected by the other TTS models.
+	Emotion string
+	// Speed is the TTS speaking rate. 0 = the model's own default; each model
+	// has its own range (0.5-2, 0.7-1.2, or 0.25-4).
+	Speed float64
+	// Pitch shifts minimax/speech-2.8-hd's voice in semitones, -12..12.
+	// 0 = unshifted. Rejected by the other TTS models.
+	Pitch int
+	// Instructions steers delivery for OpenAI's gpt-4o-mini-tts only (accent,
+	// tone), e.g. "crisp British RP, dry". Rejected by every other TTS model.
+	Instructions string
+	// Stability is elevenlabs/v3's voice stability, 0-1. nil = the model's own
+	// default (0.5). Rejected by the other TTS models.
+	Stability *float64
+	// Style is elevenlabs/v3's style exaggeration, 0-1. nil = the model's own
+	// default (0). Rejected by the other TTS models.
+	Style *float64
 	// Audio is the audio track for talking-head models (kling-avatar,
 	// lipsync): a file path, http(s) URL, or data URL.
 	Audio string
@@ -398,6 +452,9 @@ func (r *Request) applyDefaults() {
 			instrumental := false
 			r.Instrumental = &instrumental
 		}
+		if IsTTSModel(r.Model) && r.Voice == "" {
+			r.Voice = DefaultVoiceFor(r.Model)
+		}
 	}
 	if r.Background == "" {
 		r.Background = "auto"
@@ -443,6 +500,10 @@ func (r *Request) Validate() error {
 	switch {
 	case IsVideoModel(r.Model):
 		if err := r.validateVideo(); err != nil {
+			return err
+		}
+	case IsTTSModel(r.Model):
+		if err := r.validateTTS(); err != nil {
 			return err
 		}
 	case IsAudioModel(r.Model):
@@ -612,6 +673,170 @@ func (r *Request) validateAudio() error {
 	}
 	if r.Seed != 0 && !IsSFXModel(r.Model) {
 		return errors.New("this audio model has no seed input; -seed is supported by -model sfx only")
+	}
+	return nil
+}
+
+// ElevenLabsTTSVoices are the voice names elevenlabs/v3 accepts. curds
+// validates -voice against this list so a typo fails locally instead of
+// upstream.
+var ElevenLabsTTSVoices = map[string]bool{
+	"Rachel": true, "Drew": true, "Clyde": true, "Paul": true, "Aria": true,
+	"Domi": true, "Dave": true, "Roger": true, "Fin": true, "Sarah": true,
+	"James": true, "Jane": true, "Juniper": true, "Arabella": true,
+	"Hope": true, "Bradford": true, "Reginald": true, "Gaming": true,
+	"Austin": true, "Kuon": true, "Blondie": true, "Priyanka": true,
+	"Alexandra": true, "Monika": true, "Mark": true, "Grimblewood": true,
+}
+
+// OpenAITTSVoices are the voice names POST /v1/audio/speech accepts.
+var OpenAITTSVoices = map[string]bool{
+	"alloy": true, "ash": true, "ballad": true, "coral": true, "echo": true,
+	"fable": true, "onyx": true, "nova": true, "sage": true, "shimmer": true,
+	"verse": true, "marin": true, "cedar": true,
+}
+
+// MinimaxTTSEmotions are the delivery emotions minimax/speech-2.8-hd accepts.
+var MinimaxTTSEmotions = map[string]bool{
+	"auto": true, "happy": true, "sad": true, "angry": true, "fearful": true,
+	"disgusted": true, "surprised": true, "calm": true, "fluent": true,
+	"neutral": true,
+}
+
+// DefaultVoiceFor returns the voice curds asks a TTS model for when -voice is
+// omitted: MiniMax's warm English system voice, ElevenLabs' Rachel, or
+// OpenAI's sage.
+func DefaultVoiceFor(model string) string {
+	switch {
+	case IsTTSElevenLabsModel(model):
+		return DefaultTTSElevenLabsVoice
+	case IsOpenAITTSModel(model):
+		return DefaultTTSOpenAIVoice
+	default:
+		return DefaultTTSVoice
+	}
+}
+
+// SortedNames renders an enum map as a sorted, comma-separated list for error
+// messages, so a rejected -voice tells the user what it could have been.
+func SortedNames(voices map[string]bool) string {
+	names := make([]string, 0, len(voices))
+	for name := range voices {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// validateTTS checks a text-to-speech request. The three models share the
+// audio shape (one file, mp3/wav, no input media) but differ in provider,
+// voices, speed range, and which delivery knobs they take, so each is checked
+// against its own contract. Flags belonging to another TTS model are rejected
+// rather than silently ignored.
+func (r *Request) validateTTS() error {
+	if r.NumImages != 1 {
+		return fmt.Errorf("text-to-speech produces exactly one file, got num_images=%d", r.NumImages)
+	}
+	if !AudioAllowedFormats[r.OutputFormat] {
+		return fmt.Errorf("audio output_format must be mp3 or wav, got %q", r.OutputFormat)
+	}
+	if r.Size != "" {
+		return errors.New("text-to-speech has no pixel size; -size is image-only")
+	}
+	if r.Mask != "" {
+		return errors.New("text-to-speech does not accept -mask")
+	}
+	if len(r.InputImages) > 0 || r.LastFrameImage != "" || r.InputVideo != "" ||
+		len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("text-to-speech takes no input media; it reads -prompt (or stdin)")
+	}
+	switch {
+	case IsTTSSpeechModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		if utf8.RuneCountInString(r.Prompt) > MaxTTSTextChars {
+			return fmt.Errorf("text is %d characters; MiniMax Speech 2.8 HD accepts at most %d", utf8.RuneCountInString(r.Prompt), MaxTTSTextChars)
+		}
+		if r.Emotion != "" && !MinimaxTTSEmotions[r.Emotion] {
+			return fmt.Errorf("emotion must be one of %s, got %q", SortedNames(MinimaxTTSEmotions), r.Emotion)
+		}
+		if r.Speed != 0 && (r.Speed < 0.5 || r.Speed > 2) {
+			return fmt.Errorf("speed must be 0.5-2 for MiniMax Speech 2.8 HD, got %g", r.Speed)
+		}
+		if r.Pitch < -12 || r.Pitch > 12 {
+			return fmt.Errorf("pitch must be -12..12 for MiniMax Speech 2.8 HD, got %d", r.Pitch)
+		}
+		if r.Stability != nil || r.Style != nil {
+			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
+		}
+		if r.Instructions != "" {
+			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+		}
+	case IsTTSElevenLabsModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		if r.Voice != "" && !ElevenLabsTTSVoices[r.Voice] {
+			return fmt.Errorf("voice must be one of %s, got %q", SortedNames(ElevenLabsTTSVoices), r.Voice)
+		}
+		if r.Speed != 0 && (r.Speed < 0.7 || r.Speed > 1.2) {
+			return fmt.Errorf("speed must be 0.7-1.2 for ElevenLabs v3, got %g", r.Speed)
+		}
+		if r.Stability != nil && (*r.Stability < 0 || *r.Stability > 1) {
+			return fmt.Errorf("stability must be 0-1 for ElevenLabs v3, got %g", *r.Stability)
+		}
+		if r.Style != nil && (*r.Style < 0 || *r.Style > 1) {
+			return fmt.Errorf("style must be 0-1 for ElevenLabs v3, got %g", *r.Style)
+		}
+		if r.Emotion != "" {
+			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if r.Pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if r.Instructions != "" {
+			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+		}
+	case IsOpenAITTSModel(r.Model):
+		if r.Provider != ProviderOpenAI {
+			return fmt.Errorf("model %q is only supported with provider openai", r.Model)
+		}
+		if r.Voice != "" && !OpenAITTSVoices[r.Voice] {
+			return fmt.Errorf("voice must be one of %s, got %q", SortedNames(OpenAITTSVoices), r.Voice)
+		}
+		if r.Speed != 0 && (r.Speed < 0.25 || r.Speed > 4) {
+			return fmt.Errorf("speed must be 0.25-4 for OpenAI speech, got %g", r.Speed)
+		}
+		if r.Instructions != "" && !IsOpenAITTSMiniModel(r.Model) {
+			return fmt.Errorf("-instructions is only supported by gpt-4o-mini-tts, not %s", r.Model)
+		}
+		if utf8.RuneCountInString(r.Prompt) > MaxOpenAITTSChars {
+			return fmt.Errorf("text is %d characters; OpenAI speech accepts at most %d", utf8.RuneCountInString(r.Prompt), MaxOpenAITTSChars)
+		}
+		if r.Emotion != "" {
+			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if r.Pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+		}
+		if r.Stability != nil || r.Style != nil {
+			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
+		}
+	default:
+		return fmt.Errorf("unsupported text-to-speech model %q", r.Model)
+	}
+	if r.Seed != 0 {
+		return errors.New("text-to-speech models have no seed input")
+	}
+	if r.Duration != 0 {
+		return errors.New("text-to-speech has no -duration; the text sets the length")
+	}
+	if r.Instrumental != nil {
+		return errors.New("-instrumental is only supported by the music models")
+	}
+	if strings.TrimSpace(r.Lyrics) != "" {
+		return errors.New("-lyrics is only supported by -model music-vocal")
 	}
 	return nil
 }
@@ -1194,12 +1419,46 @@ func IsSFXModel(model string) bool {
 	return matchesReplicateModel(model, SFXModel)
 }
 
+// IsTTSSpeechModel reports whether the resolved provider model is MiniMax
+// Speech 2.8 HD (minimax/speech-2.8-hd): the default text-to-speech model,
+// with a free-form voice id, emotion, speed, and pitch.
+func IsTTSSpeechModel(model string) bool {
+	return matchesReplicateModel(model, TTSSpeechModel)
+}
+
+// IsTTSElevenLabsModel reports whether the resolved provider model is
+// ElevenLabs v3 (elevenlabs/v3): expressive text-to-speech with
+// stability/style, served by Replicate.
+func IsTTSElevenLabsModel(model string) bool {
+	return matchesReplicateModel(model, TTSElevenLabsModel)
+}
+
+// IsOpenAITTSMiniModel reports whether the resolved provider model is OpenAI's
+// gpt-4o-mini-tts, the one speech model that accepts -instructions.
+func IsOpenAITTSMiniModel(model string) bool {
+	return matchesReplicateModel(model, TTSOpenAIModel)
+}
+
+// IsOpenAITTSModel reports whether the resolved provider model is one of
+// OpenAI's speech models (gpt-4o-mini-tts or tts-1-hd), served by the openai
+// provider's POST /v1/audio/speech endpoint.
+func IsOpenAITTSModel(model string) bool {
+	return IsOpenAITTSMiniModel(model) || matchesReplicateModel(model, TTS1HDModel)
+}
+
+// IsTTSModel reports whether the resolved provider model is a text-to-speech
+// model: MiniMax Speech 2.8 HD, ElevenLabs v3, or an OpenAI speech model.
+func IsTTSModel(model string) bool {
+	return IsTTSSpeechModel(model) || IsTTSElevenLabsModel(model) || IsOpenAITTSModel(model)
+}
+
 // IsAudioModel reports whether the resolved provider model produces audio
 // rather than an image or a video. Audio models are prompt-driven but run
 // under their own validation and request-building path: no input media, no
-// aspect ratio, no pixel size, and an mp3/wav output container.
+// aspect ratio, no pixel size, and an mp3/wav output container. It covers the
+// music/sfx models and the text-to-speech models.
 func IsAudioModel(model string) bool {
-	return IsMusicModel(model) || IsMusicVocalModel(model) || IsSFXModel(model)
+	return IsMusicModel(model) || IsMusicVocalModel(model) || IsSFXModel(model) || IsTTSModel(model)
 }
 
 // matchesReplicateModel reports whether model is base, optionally with a

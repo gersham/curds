@@ -11,7 +11,9 @@ plus images/videos via Replicate-hosted models (FLUX.2 [pro], Nano Banana 2,
 Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), music and sound
 effects via `elevenlabs/music` (-model music), `minimax/music-2.6`
 (-model music-vocal, alias minimax-music) and `stability-ai/stable-audio-2.5`
-(-model sfx), talking heads and
+(-model sfx), text to speech via `minimax/speech-2.8-hd` (-model tts),
+`elevenlabs/v3` (-model tts-elevenlabs) and OpenAI's `gpt-4o-mini-tts`
+(-model tts-openai; `tts-1-hd` also selectable), talking heads and
 lip-sync via `kwaivgi/kling-avatar-v2` and `sync/lipsync-2-pro`, plus background
 removal via `bria/remove-background` (segmentation), plus image upscaling via
 `nightmareai/real-esrgan` and `topazlabs/image-upscale` (super-resolution).
@@ -108,6 +110,24 @@ file; if you add a provider, model, or flag that changes the happy path, update
   `replicateImageFormat`, take one image per prediction, and ignore
   quality/background/moderation. `Request.ImageResolution` carries
   `-image-resolution` for both.
+- **Text-to-speech models.** `tts` (`minimax/speech-2.8-hd`, the
+  default TTS model), `tts-elevenlabs` (`elevenlabs/v3`) and `tts-openai` /
+  `tts-1-hd` (OpenAI `gpt-4o-mini-tts` / `tts-1-hd`, via the openai provider's
+  `POST /v1/audio/speech`, returning raw bytes). They are audio models: they
+  emit `Result.Audios`, save mp3/wav (`saveAudios`/`writeAudioAsset`), and are
+  covered by `IsAudioModel`. `IsTTSModel` plus
+  `IsTTSSpeechModel`/`IsTTSElevenLabsModel`/`IsOpenAITTSModel`/
+  `IsOpenAITTSMiniModel` gate the per-model validation (`validateTTS` in
+  client.go, `validateTTSFlags` in the CLI) and builders
+  (`buildReplicateSpeechInput`, `buildReplicateElevenLabsTTSInput`,
+  `OpenAIProvider.callSpeech`). Replicate TTS needs a replicate token, OpenAI
+  TTS an openai token; a config model bound to one provider forces it, and
+  incompatible `-provider`/`-model` pairs are rejected locally. Flags: `-voice`
+  (free-form for minimax, enum for the other two), `-emotion`/`-pitch`
+  (minimax), `-stability`/`-style` (elevenlabs), `-instructions` (tts-openai /
+  gpt-4o-mini-tts only), `-speed` (all three, per-model range). `Request.
+  Stability`/`Style` are `*float64` (nil = model default) because 0 is a valid
+  value. Min/max text lengths are checked locally (10000 / 4096 chars).
 - **Audio models.** `music` (`elevenlabs/music`), `music-vocal`
   (`minimax/music-2.6`, alias `minimax-music`) and `sfx`
   (`stability-ai/stable-audio-2.5`) are Replicate-only, prompt-driven (except

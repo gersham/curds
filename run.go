@@ -31,12 +31,20 @@ func (p *ReplicateProvider) Run(ctx context.Context, req *Request, input map[str
 	if err != nil {
 		return nil, err
 	}
-	urls, err := extractOutputURLs(pred.Output)
+	var urls []string
+	all, err := extractOutputURLs(pred.Output)
 	if err != nil {
-		// A model can return text or a structured object instead of URLs.
-		// That is still a successful run, just nothing to download.
 		logDebug(req, "run.output_shape", "err", err.Error())
-		urls = nil
+	}
+	// Text models return plain strings (or arrays of streamed tokens) in the
+	// same shape as file URLs; only real http(s) URLs are downloadable. Any
+	// non-URL string means the output is text: print it, download nothing.
+	for _, u := range all {
+		if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+			urls = nil
+			break
+		}
+		urls = append(urls, u)
 	}
 	return &RunResult{ID: pred.ID, Output: pred.Output, URLs: urls, Prediction: pred.raw}, nil
 }

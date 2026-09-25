@@ -190,29 +190,46 @@ func TestRunSubcommandJSONOutput(t *testing.T) {
 	}
 }
 
-// An output with no URLs (a text/blob model) prints the output JSON.
+// Outputs with no downloadable URLs — objects, plain strings, streamed token
+// arrays from text models — print the output JSON instead of downloading.
 func TestRunSubcommandNonURLOutputPrintsJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": "run-3", "status": "succeeded", "output": map[string]any{"text": "hi there"},
-		})
-	}))
-	defer srv.Close()
-	withRunProvider(t, srv)
-	t.Setenv("CURDS_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
-
-	var runErr error
-	printed := captureStdout(t, func() {
-		runErr = realMainRun(newLogger(io.Discard), time.Now(), []string{
-			"-token", "rtok", "owner/text-model", "prompt=hi",
-		})
-	})
-	if runErr != nil {
-		t.Fatalf("realMainRun: %v", runErr)
+	cases := []struct {
+		name   string
+		output any
+		want   string
+	}{
+		{"object", map[string]any{"text": "hi there"}, "hi there"},
+		{"plain string", "hello world", "hello world"},
+		{"token array", []string{"hel", "lo"}, `"lo"`},
 	}
-	if !strings.Contains(printed, "hi there") {
-		t.Errorf("stdout should carry the output JSON, got %q", printed)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, "/predictions") {
+					t.Errorf("unexpected download of %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": "run-3", "status": "succeeded", "output": tc.output,
+				})
+			}))
+			defer srv.Close()
+			withRunProvider(t, srv)
+			t.Setenv("CURDS_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
+
+			var runErr error
+			printed := captureStdout(t, func() {
+				runErr = realMainRun(newLogger(io.Discard), time.Now(), []string{
+					"-token", "rtok", "owner/text-model", "prompt=hi",
+				})
+			})
+			if runErr != nil {
+				t.Fatalf("realMainRun: %v", runErr)
+			}
+			if !strings.Contains(printed, tc.want) {
+				t.Errorf("stdout should carry the output JSON, got %q", printed)
+			}
+		})
 	}
 }
 

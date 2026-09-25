@@ -30,9 +30,11 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   previous generation.
   `-provider xai` without `-model` selects native `grok-imagine-video`. For ordinary `.mp4`
   video omit `-provider`/`-model`; curds defaults to Replicate
-  `bytedance/seedance-2.0`. Use `-model` for the Replicate alternatives —
-  `flux-2-pro` / `nano-banana-2` (images), `kling-v3` / `minimax-h3` (video),
-  `remove-bg`, `upscale`, `upscale-pro`, plus the talking-head pair
+  `bytedance/seedance-2.5` (480p/720p, up to 30s, up to 30 reference images).
+  Use `-model` for the Replicate alternatives —
+  `flux-2-pro` / `nano-banana-2` (images), `seedance-2` (1080p), `kling-v3` /
+  `minimax-h3` (video), `remove-bg`, `upscale`, `upscale-esrgan`,
+  `upscale-pro`, plus the talking-head pair
   `kling-avatar` (one portrait + `-audio`) and `lipsync` (`-input-video` +
   `-audio`) — when the user asks for them or OpenAI access is missing. Do not
   pair `-provider` with a model that provider does not run; curds rejects the
@@ -43,12 +45,16 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   Audio output is `mp3`, or `wav` when `-output` ends in `.wav`; an audio
   format without an audio model is rejected. Audio models are Replicate-only
   and need a prompt (`music-vocal` also accepts lyrics alone).
-- Text to speech: `-model tts` (MiniMax Speech 2.8 HD, the default; `-voice`
-  free-form, plus `-emotion` / `-speed` / `-pitch`), `-model tts-elevenlabs`
-  (ElevenLabs v3; inline tags like `[sarcastic]` in the text, plus
-  `-stability` / `-style`, enum `-voice`), `-model tts-openai` /
+- Text to speech: `-model tts` (Gemini 3.1 Flash TTS, the default; enum
+  `-voice`, default Kore, plus `-instructions` for the style prompt),
+  `-model tts-minimax` (MiniMax Speech 2.8 HD; free-form `-voice`, plus
+  `-emotion` / `-speed` / `-pitch`), `-model tts-elevenlabs`
+  (ElevenLabs v3; `-stability` / `-style`, enum `-voice` — the text is read
+  verbatim, so bracketed markers are spoken aloud), `-model tts-openai` /
   `-model tts-1-hd` (OpenAI speech; enum `-voice`, and `-instructions` on
-  `tts-openai` only). Read the text from `-prompt` or stdin.
+  `tts-openai` only). Read the text from `-prompt` or stdin. Gemini and
+  ElevenLabs return wav/mp3 respectively and curds transcodes to the
+  requested container.
 
 ## Commands
 
@@ -59,7 +65,7 @@ curds -no-tui -provider openai -aspect-ratio 16:9 -quality high -prompt "$PROMPT
 # Edit / compose with reference images (comma-separated or repeated, max 16)
 curds -no-tui -provider openai -input-image ref1.png,ref2.png -prompt "$PROMPT" -output "$OUT"
 
-# Video (default model Seedance 2.0; seed from a still with -input-image)
+# Video (default model Seedance 2.5; seed from a still with -input-image)
 curds -no-tui -input-image still.webp -prompt "$PROMPT" -aspect-ratio 16:9 -video-duration 5 -video-resolution 720p -output "$OUT.mp4"
 
 # Cheap/fast image alternative (FLUX.2 [pro]) or 4K composite (Nano Banana 2)
@@ -71,19 +77,21 @@ curds -no-tui -model music -duration 45 -prompt "$PROMPT" -output "$OUT.mp3"
 curds -no-tui -model music-vocal -lyrics @song.txt -prompt "$PROMPT" -output "$OUT.mp3"
 curds -no-tui -model sfx -duration 8 -prompt "$PROMPT" -output "$OUT.wav"
 
-# Text to speech (only when asked; delivery goes in the text/flags)
-curds -no-tui -model tts -voice English_Wiselady -emotion calm -prompt "$PROMPT" -output "$OUT.mp3"
-curds -no-tui -model tts-elevenlabs -voice Rachel -prompt "[sarcastic] $PROMPT" -output "$OUT.mp3"
+# Text to speech (only when asked; delivery goes in the flags)
+curds -no-tui -model tts -voice Kore -instructions "warm and slow, British accent" -prompt "$PROMPT" -output "$OUT.wav"
+curds -no-tui -model tts-minimax -voice English_Wiselady -emotion calm -prompt "$PROMPT" -output "$OUT.mp3"
+curds -no-tui -model tts-elevenlabs -voice Rachel -style 0.8 -prompt "$PROMPT" -output "$OUT.mp3"
 curds -no-tui -model tts-openai -voice sage -instructions "crisp British RP, dry" -prompt "$PROMPT" -output "$OUT.wav"
-cat script.txt | curds -no-tui -model tts -output "$OUT.wav"
+cat script.txt | curds -no-tui -model tts-minimax -output "$OUT.wav"
 
 # Background removal (transparent PNG cutout)
 curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
 
-# Upscale / super-resolution (PNG; -scale 1-10, default 4; add -face-enhance for portraits)
+# Upscale / super-resolution (PNG; -scale 1-8, default 4; no face enhancement)
 curds -no-tui -provider replicate -model upscale -input-image small.jpg -scale 4 -output big.png
 
-# Better upscale for faces and text (Topaz; -scale 2, 4, or 6)
+# Face enhancement needs Real-ESRGAN (-scale 1-10) or Topaz (-scale 2, 4, or 6)
+curds -no-tui -provider replicate -model upscale-esrgan -face-enhance -input-image headshot.jpg -output headshot-4x.png
 curds -no-tui -model upscale-pro -input-image small.jpg -scale 4 -output big.png
 
 # Talking head / lip-sync (only when asked; audio is kept, never stripped)

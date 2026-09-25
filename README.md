@@ -5,18 +5,20 @@
 ![curds in action](docs/curds-preview.png)
 
 Generate images from the command line via OpenAI's gpt-image-2.5 (direct, the
-default), or images/videos/music/speech via Replicate-hosted models such as Grok
-Imagine Video 1.5, Seedance 2.0, Kling 3.0, ElevenLabs Music (`-model music`),
-MiniMax Music 2.6 (`-model music-vocal`), Stable Audio 2.5 (`-model sfx`) for
-sound effects, MiniMax Speech 2.8 HD (`-model tts`) and ElevenLabs v3
+default), or images/videos/music/speech via Replicate-hosted models such as
+Seedance 2.5 and Grok Imagine Video 1.5 (video), Kling 3.0, ElevenLabs Music
+(`-model music`), MiniMax Music 2.6 (`-model music-vocal`), Stable Audio 2.5
+(`-model sfx`) for sound effects, Gemini 3.1 Flash TTS (`-model tts`),
+MiniMax Speech 2.8 HD (`-model tts-minimax`) and ElevenLabs v3
 (`-model tts-elevenlabs`) for text-to-speech (OpenAI's gpt-4o-mini-tts via
 `-model tts-openai`), and the talking-head pair Kling Avatar 2.0
 (`-model kling-avatar`) and Sync Labs lipsync-2-pro (`-model lipsync`). Also
 wraps Replicate's `bria/remove-background`
 for one-shot transparent-PNG cutouts (`-model remove-bg`) and
-`nightmareai/real-esrgan` for super-resolution upscaling (`-model upscale`),
-and `curds run OWNER/MODEL key=value …` drives any other Replicate model with
-raw inputs.
+`prunaai/p-image-upscale` / `nightmareai/real-esrgan` / `topazlabs/image-upscale`
+for super-resolution upscaling (`-model upscale` / `upscale-esrgan` /
+`upscale-pro`), and `curds run OWNER/MODEL key=value …` drives any other
+Replicate model with raw inputs.
 Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
@@ -118,7 +120,7 @@ one and (optionally) save it to the config.
 
 curds auto-selects the provider based on which token is available, with
 OpenAI preferred for images when both are set. For MP4 output with no `-model`,
-curds uses `default_video_model` (Replicate-hosted Seedance 2.0), falling back
+curds uses `default_video_model` (Replicate-hosted Seedance 2.5), falling back
 to the native xAI provider when no `replicate` token is available but an `xai`
 token is. Override with `-provider openai|replicate|xai` or by setting
 `provider` in the config file. When `-provider` is set and `-model` is
@@ -130,7 +132,7 @@ supports.
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
 | openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`; Sunburst via `-model gpt-image-2.5-sunburst`); speech: `gpt-4o-mini-tts` (`-model tts-openai`), `tts-1-hd` | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`); `/v1/audio/speech` for TTS |
-| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` (talking heads: `kwaivgi/kling-avatar-v2`, `sync/lipsync-2-pro`); audio: `elevenlabs/music`, `minimax/music-2.6`, `stability-ai/stable-audio-2.5`; speech: `minimax/speech-2.8-hd`, `elevenlabs/v3` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`); `curds run` posts raw inputs to the same endpoint |
+| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.5` (`bytedance/seedance-2.0` via `-model seedance-2`; talking heads: `kwaivgi/kling-avatar-v2`, `sync/lipsync-2-pro`); audio: `elevenlabs/music`, `minimax/music-2.6`, `stability-ai/stable-audio-2.5`; speech: `google/gemini-3.1-flash-tts`, `minimax/speech-2.8-hd`, `elevenlabs/v3`; upscale: `prunaai/p-image-upscale`, `nightmareai/real-esrgan`, `topazlabs/image-upscale` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`); `curds run` posts raw inputs to the same endpoint |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
 ## Editing / composing with reference images
@@ -199,33 +201,42 @@ extension if needed.
 ## Video generation
 
 For MP4 output with no `-model`, curds uses `default_video_model` — **Seedance
-2.0** (`bytedance/seedance-2.0`, provider `replicate`), which leads on
-reference handling, multi-scene continuity, and native audio in the same pass.
-When no `replicate` token is available but an `xai` token is, curds falls back
-to xAI's native Grok Imagine Video. Kling 3.0, MiniMax H3, and the Grok 1.5
-wrapper are selectable with `-model`.
+2.5** (`bytedance/seedance-2.5`, provider `replicate`), which leads on
+reference handling (30 images / 10 videos / 10 audios), multi-scene
+continuity, native audio, and clips up to 30s. Set `default_video_model =
+"seedance-2"` or pass `-model seedance-2` when you need 1080p — the one
+resolution 2.5 dropped. When no `replicate` token is available but an `xai`
+token is, curds falls back to xAI's native Grok Imagine Video. Kling 3.0,
+MiniMax H3, and the Grok 1.5 wrapper are selectable with `-model`.
 
-### Seedance 2.0 via Replicate (`seedance-2`) — default
+### Seedance 2.5 via Replicate (`seedance-2.5`) — default
 
 ```bash
 # Text-to-video (default; no input image required)
-curds -prompt "a cinematic 5 second shot of a glass sculpture forming" \
-      -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
+curds -prompt "a cinematic 20 second shot of a glass sculpture forming" \
+      -aspect-ratio 16:9 -video-duration 20 -output /tmp/seedance.mp4
 ```
 
 Seedance-specific support:
 
 - `-input-image` — one entry is the first frame; multiple become reference
-  images (up to 9 total with `-reference-image`).
+  images (up to 30 total with `-reference-image`).
 - `-last-frame-image` — requires exactly one `-input-image`.
-- `-reference-video` / `-reference-audio` — up to 3 each.
-- `-video-duration` — `-1` for intelligent duration, or `4` through `15`
+- `-reference-video` / `-reference-audio` — up to 10 each.
+- `-video-duration` — `-1` for intelligent duration, or `4` through `30`
   seconds. Default: `5`.
-- `-video-resolution` — `480p`, `720p`, or `1080p`. Default: `720p`.
+- `-video-resolution` — `480p` or `720p`. Default: `720p`. 2.5 has no 1080p;
+  `-model seedance-2` and `-model kling-v3` do.
 - `-no-audio` — disables synchronized generated audio.
 - `-seed` — optional deterministic seed.
-- `-aspect-ratio` — `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `9:21`, or
-  `adaptive`. Default: `16:9`.
+- `-aspect-ratio` — `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, or
+  `adaptive` (2.5 dropped 2.0's `9:21`). Default: `16:9`.
+
+### Seedance 2.0 via Replicate (`seedance-2`)
+
+The previous Seedance, still selectable. Same request surface, a narrower
+reference set (9 images, 3 videos, 3 audios), durations of `-1` or `4`-`15`
+seconds, `9:21`, and 1080p via `-video-resolution 1080p`.
 
 ### Kling 3.0 via Replicate (`kling-v3`)
 
@@ -379,8 +390,9 @@ Notes:
 
 ### Seedance face rejection → Kling fallback
 
-`bytedance/seedance-2.0` rejects any input image containing a realistic human
-face (`flagged as sensitive (E005)`), where Kling 3.0 accepts the same frames.
+Both Seedance versions (`bytedance/seedance-2.5` and `bytedance/seedance-2.0`)
+reject any input image containing a realistic human face
+(`flagged as sensitive (E005)`), where Kling 3.0 accepts the same frames.
 When a Seedance prediction fails that way and the request carried an image
 (`-input-image`, `-last-frame-image`, or `-reference-image`), curds retries
 once on Kling 3.0: same prompt, first image as `start_image`, last frame as
@@ -442,26 +454,30 @@ Notes:
   not sent to audio models.
 - `-seed` is supported by `sfx` only.
 
-For any other audio model on Replicate, use the raw passthrough:
-`curds run OWNER/MODEL key=value …` (see below).
-
 
 ## Text to speech
 
-Three TTS models read `-prompt` (or stdin) aloud, all saving `mp3` or `wav`:
+Four TTS models read `-prompt` (or stdin) aloud, all saving `mp3` or `wav`:
 
-- `tts` — **MiniMax Speech 2.8 HD** (`minimax/speech-2.8-hd`), the default TTS
-  model. Natural narration from up to 10000 characters (with `<#0.5#>`
-  pause markers). `-voice` takes any system voice id or a cloned id (default
+- `tts` — **Gemini 3.1 Flash TTS** (`google/gemini-3.1-flash-tts`), the
+  default TTS model. 30 voices, 70+ languages (the language follows the
+  model's own default, `en-US`), and a natural-language style prompt:
+  `-instructions "warm and slow, British accent"`. `-voice` picks from the
+  enum (default `Kore`). Text and style prompt are each capped at 4000 bytes.
+  It returns WAV, so a `-output .mp3` is transcoded locally via ffmpeg.
+- `tts-minimax` — **MiniMax Speech 2.8 HD** (`minimax/speech-2.8-hd`).
+  Natural narration from up to 10000 characters (with `<#0.5#>` pause
+  markers). `-voice` takes any system voice id or a cloned id (default
   `English_Wiselady`); `-emotion` (default `auto`), `-speed` (0.5–2), and
   `-pitch` (−12..12) tune the delivery. curds asks for 44.1 kHz output
   (256 kbps mp3) and turns on English normalization so numbers and dates read
   naturally.
 - `tts-elevenlabs` — **ElevenLabs v3** (`elevenlabs/v3`). The expressive
-  option: inline audio tags like `[sarcastic]`, `[whispers]`, or `[laughs]`
-  go in the text, and `-stability` (0–1, default 0.5) and `-style` (0–1,
-  default 0) tune the voice. `-voice` picks from the enum (default `Rachel`).
-  It returns mp3; a `.wav` output is transcoded locally via ffmpeg.
+  option: `-stability` (0–1, default 0.5) and `-style` (0–1, default 0) tune
+  the voice. `-voice` picks from the enum (default `Rachel`). The text is read
+  verbatim: bracketed emotion markers in it are spoken aloud rather than
+  interpreted, because the Replicate deployment does not parse them. It
+  returns mp3; a `.wav` output is transcoded locally via ffmpeg.
 - `tts-openai` — **OpenAI gpt-4o-mini-tts**, served by the `openai` provider's
   `POST /v1/audio/speech`. `-instructions` steers accent and tone (`"crisp
   British RP, dry"`); `-voice` picks from the OpenAI enum (default `sage`).
@@ -469,36 +485,46 @@ Three TTS models read `-prompt` (or stdin) aloud, all saving `mp3` or `wav`:
   `-instructions`. Text is capped at 4096 characters.
 
 ```bash
-# Narration line with a voice and emotion
-curds -model tts -voice English_Deep-VoicedGentleman -emotion calm \
+# Default model: Gemini 3.1 Flash TTS with a style prompt
+curds -model tts -voice Kore -instructions "warm and slow, British accent" \
+      -prompt "The results, I'm afraid, are conclusive." -output /tmp/line.wav
+
+# MiniMax narration line with a voice and emotion
+curds -model tts-minimax -voice English_Deep-VoicedGentleman -emotion calm \
       -prompt "Chapter one. The rain had not stopped for a week." -output /tmp/line.mp3
 
-# ElevenLabs v3 with an inline tag (delivery is in the text)
-curds -model tts-elevenlabs -voice Rachel \
-      -prompt "[sarcastic] Oh, brilliant. Another Monday." -output /tmp/line.mp3
+# ElevenLabs v3 with stability/style (the text is read verbatim)
+curds -model tts-elevenlabs -voice Rachel -style 0.8 \
+      -prompt "Oh, brilliant. Another Monday." -output /tmp/line.mp3
 
 # OpenAI with delivery instructions
 curds -model tts-openai -voice sage -instructions "crisp British RP, dry" \
       -prompt "The results, I'm afraid, are conclusive." -output /tmp/line.wav
 
 # Read a whole script from a file
-cat script.txt | curds -model tts -output /tmp/narration.wav
+cat script.txt | curds -model tts-minimax -output /tmp/narration.wav
 ```
 
 Notes:
 
-- `tts`/`tts-elevenlabs` need a Replicate token; `tts-openai`/`tts-1-hd` need
-  an OpenAI token. An explicit incompatible `-provider`/`-model` pair is
-  rejected locally.
-- `-voice` is validated against the enum for `tts-elevenlabs` and the OpenAI
-  models; `tts` accepts cloned ids, so it is free-form.
+- `tts`, `tts-minimax`, and `tts-elevenlabs` need a Replicate token;
+  `tts-openai`/`tts-1-hd` need an OpenAI token. An explicit incompatible
+  `-provider`/`-model` pair is rejected locally.
+- `-voice` is validated against the enum for `tts`, `tts-elevenlabs`, and the
+  OpenAI models; `tts-minimax` accepts cloned ids, so it is free-form.
 - Flags that do not apply to the chosen model are usage errors (exit 2):
-  `-emotion`/`-pitch` belong to `tts`, `-stability`/`-style` to
-  `tts-elevenlabs`, and `-instructions` to `tts-openai`.
-- `-speed` has a per-model range: `tts` 0.5–2, `tts-elevenlabs` 0.7–1.2,
-  `tts-openai` 0.25–4. `0` means the model's own default.
-- List MiniMax voices with `curds run -schema minimax/speech-2.8-hd`.
+  `-emotion`/`-pitch` belong to `tts-minimax`, `-stability`/`-style` to
+  `tts-elevenlabs`, and `-instructions` to `tts` and `tts-openai`.
+- `-speed` has a per-model range: `tts-minimax` 0.5–2, `tts-elevenlabs`
+  0.7–1.2, `tts-openai` 0.25–4; `tts` (Gemini) has no speed knob. `0` means
+  the model's own default.
+- List MiniMax voices with `curds run -schema minimax/speech-2.8-hd`, and
+  Gemini voices with `curds run -schema google/gemini-3.1-flash-tts`.
 
+Gemini voices: Achernar, Achird, Algenib, Algieba, Alnilam, Aoede, Autonoe,
+Callirrhoe, Charon, Despina, Enceladus, Erinome, Fenrir, Gacrux, Iapetus,
+Kore, Laomedeia, Leda, Orus, Pulcherrima, Puck, Rasalgethi, Sadachbia,
+Sadaltager, Schedar, Sulafat, Umbriel, Vindemiatrix, Zephyr, Zubenelgenubi.
 ElevenLabs voices: Rachel, Drew, Clyde, Paul, Aria, Domi, Dave, Roger, Fin,
 Sarah, James, Jane, Juniper, Arabella, Hope, Bradford, Reginald, Gaming,
 Austin, Kuon, Blondie, Priyanka, Alexandra, Monika, Mark, Grimblewood.
@@ -563,27 +589,46 @@ Notes:
 
 ## Upscaling / super-resolution
 
-`-model upscale` runs `nightmareai/real-esrgan` on Replicate. It takes one
-input image and a `-scale` factor (1–10, default 4) and returns a single
-upscaled PNG. Like background removal there's no prompt, no aspect ratio, and
-no `-quality` knob. Pass `-face-enhance` to run GFPGAN face restoration, which
-helps on portraits and low-resolution faces.
+`-model upscale` runs `prunaai/p-image-upscale` (2026-era) on Replicate. It
+takes one input image and a `-scale` factor (1–8, default 4), multiplying each
+side, and returns a single upscaled PNG. Like background removal there's no
+prompt, no aspect ratio, and no `-quality` knob — and no face enhancement: use
+`-model upscale-esrgan` or `-model upscale-pro` for that. `-output-format`
+accepts `png` (the default), `jpeg`, or `webp`.
 
 ```bash
-# Upscale 4x
+# Upscale 4x → PNG
 curds -provider replicate -model upscale \
       -input-image small.jpg -scale 4 -output big.png
 
-# Upscale a portrait with face enhancement
-curds -provider replicate -model upscale -face-enhance \
-      -input-image headshot.jpg -output headshot-4x.png
+# Same upscaler, WebP out
+curds -provider replicate -model upscale -output-format webp \
+      -input-image small.jpg -scale 2 -output big.webp
 ```
 
 Notes:
 
 - Requires exactly one `-input-image` (file path, http(s) URL, or `data:` URL).
-- Output format is forced to PNG.
-- `-scale` accepts 1–10; the default is 4 (Real-ESRGAN's own default).
+- Output format defaults to PNG; `-output-format jpeg` writes `.jpg` bytes.
+- `-scale` accepts 1–8; the default is 4.
+- `-face-enhance` is a usage error (exit 2) here.
+- `prunaai/p-image-upscale` is an official Replicate model — no version pin.
+
+### Real-ESRGAN (`upscale-esrgan`)
+
+`nightmareai/real-esrgan` is the 2021-era upscaler, still selectable as
+`-model upscale-esrgan`. It keeps the numeric `-scale` factor (1–10, default 4)
+and is the one upscaler with GFPGAN face restoration, which helps on portraits
+and low-resolution faces.
+
+```bash
+# Upscale a portrait with face enhancement
+curds -provider replicate -model upscale-esrgan -face-enhance \
+      -input-image headshot.jpg -output headshot-4x.png
+```
+
+- One `-input-image`, no prompt, PNG out.
+- `-face-enhance` runs GFPGAN alongside the upscale.
 - `nightmareai/real-esrgan` is an official Replicate model — no version pin.
 
 ### Topaz (`upscale-pro`)
@@ -624,8 +669,8 @@ Grok Imagine Video 1.5 accepts `auto`, `16:9`, `4:3`, `1:1`, `9:16`,
 `3:4`, `3:2`, and `2:3`.
 Native xAI `grok-imagine-video` accepts `auto`, `1:1`, `16:9`, `9:16`,
 `4:3`, `3:4`, `3:2`, and `2:3`.
-Seedance 2.0 accepts `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`,
-`9:21`, and `adaptive`.
+Seedance 2.5 accepts `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, and
+`adaptive`; Seedance 2.0 also accepts `9:21`.
 Kling 3.0 accepts `16:9`, `9:16`, and `1:1`.
 FLUX.2 [pro] accepts `match_input_image`, `1:1`, `16:9`, `3:2`, `2:3`,
 `4:5`, `5:4`, `9:16`, `3:4`, `4:3` — or `-size WxH` with edges 256–2048.
@@ -645,7 +690,7 @@ becomes `1920×1088`, for example).
 ```toml
 provider = ""                   # "openai", "replicate", "xai", or "" to auto-detect
 default_model = "gpt-image-2.5"     # OpenAI id gpt-image-2.5-flare
-default_video_model = "seedance-2"              # model used for MP4 output
+default_video_model = "seedance-2.5"            # model used for MP4 output
 
 [output]
 directory = "~/Desktop/curds"
@@ -699,6 +744,9 @@ xai_name = "grok-imagine-video"
 [models.grok-imagine-video-1.5]
 replicate_name = "xai/grok-imagine-video-1.5"
 
+[models.seedance-2.5]
+replicate_name = "bytedance/seedance-2.5"
+
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
 
@@ -706,6 +754,9 @@ replicate_name = "bytedance/seedance-2.0"
 replicate_name = "bria/remove-background"
 
 [models.upscale]
+replicate_name = "prunaai/p-image-upscale"
+
+[models.upscale-esrgan]
 replicate_name = "nightmareai/real-esrgan"
 ```
 
@@ -754,9 +805,11 @@ Run `curds -h` for the full list. Highlights:
 - `-duration` / `-instrumental` / `-lyrics` — audio controls (`-model music`,
   `music-vocal`, `sfx`); `-lyrics` reads `@file.txt`
 - `-voice` / `-emotion` / `-speed` / `-pitch` / `-instructions` / `-stability`
-  / `-style` — text-to-speech controls (`-model tts`, `tts-elevenlabs`,
-  `tts-openai`)
-- `-scale` / `-face-enhance` — upscale factor and face restoration (`-model upscale`)
+  / `-style` — text-to-speech controls (`-model tts`, `tts-minimax`,
+  `tts-elevenlabs`, `tts-openai`)
+- `-scale` / `-face-enhance` — upscale factor and face restoration (`-model
+  upscale-esrgan` / `upscale-pro`; `-face-enhance` is rejected by `-model
+  upscale`)
 - `-provider`, `-token`, `-model`
 - `-open` — open generated assets in OS viewer (macOS Preview)
 - `-verbose` — debug-level logs

@@ -39,7 +39,7 @@ import (
 var newClient = curds.New
 
 // version is the curds release version, reported by the curds.start log event.
-const version = "0.5.0"
+const version = "0.6.0"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -173,7 +173,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	applyConfigDefaults(opts, cfg)
 
 	// For mp4 output with no explicit -model, the configured video model
-	// (Replicate-hosted Seedance 2.0 by default) wins. Fall back to xAI's
+	// (Replicate-hosted Seedance 2.5 by default) wins. Fall back to xAI's
 	// native grok-imagine-video only when that model needs a replicate token we
 	// don't have and an xai token is available.
 	if !flagWasSet("model") && opts.outputFormat == "mp4" && !flagWasSet("provider") {
@@ -193,9 +193,10 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		opts.provider = config.DetectProvider(cfg, dotenv, os.Getenv)
 	}
 	// If the user picked a model whose config entry binds to a single provider
-	// (e.g. seedance-2/remove-bg → replicate, grok-imagine-video → xai), force
-	// that provider. Without this, auto-detect could pick the wrong one and
-	// ResolveModel would pass the raw key through as if it belonged to it.
+	// (e.g. seedance-2.5/seedance-2/remove-bg → replicate, grok-imagine-video →
+	// xai), force that provider. Without this, auto-detect could pick the wrong
+	// one and ResolveModel would pass the raw key through as if it belonged to
+	// it.
 	if !flagWasSet("provider") && opts.modelKey != "" {
 		if m, ok := cfg.Models[opts.modelKey]; ok {
 			switch {
@@ -246,6 +247,15 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		return &usageError{err: err}
 	}
 	if err := validateAudioFlags(resolvedModel, opts); err != nil {
+		return &usageError{err: err}
+	}
+	// Same idea for the video and upscale contracts: a resolution or a
+	// -face-enhance the chosen model cannot honor is a flag mistake, so it
+	// exits 2 here rather than as an upstream 400.
+	if err := validateVideoFlags(resolvedModel, opts); err != nil {
+		return &usageError{err: err}
+	}
+	if err := validateUpscaleFlags(resolvedModel, opts); err != nil {
 		return &usageError{err: err}
 	}
 	applyModelOutputDefaults(opts, cfg, resolvedModel, logger)
@@ -720,15 +730,15 @@ func parseFlags() (*cliOptions, error) {
 	flag.StringVar(&opts.user, "user", "", "End-user identifier (openai only)")
 	flag.StringVar(&opts.replicateBYOKey, "replicate-openai-api-key", "", "BYO OpenAI key for Replicate (replicate provider only)")
 
-	flag.Var(&opts.inputImages, "input-image", fmt.Sprintf("Input reference image(s); repeat or comma-separate, up to %d", curds.MaxInputImages))
+	flag.Var(&opts.inputImages, "input-image", fmt.Sprintf("Input image(s); repeat or comma-separate, up to %d for image models (Seedance 2.5 takes one first frame plus up to 30 references)", curds.MaxInputImages))
 	flag.StringVar(&opts.mask, "mask", "", "Mask image file (openai edits only)")
 	flag.StringVar(&opts.lastFrameImage, "last-frame-image", "", "Seedance last-frame image (requires one -input-image first frame)")
-	flag.Var(&opts.referenceImages, "reference-image", "Reference image(s); repeat or comma-separate (MiniMax H3 and Seedance up to 9; xai grok-imagine-video)")
-	flag.Var(&opts.referenceVideos, "reference-video", "Seedance reference video(s); repeat or comma-separate, up to 3")
-	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate, up to 3")
-	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok/xai 1-15; Seedance -1 or 4-15 (default: 5)")
+	flag.Var(&opts.referenceImages, "reference-image", "Reference image(s); repeat or comma-separate (Seedance 2.5 up to 30, Seedance 2.0 up to 9, MiniMax H3 up to 9; xai grok-imagine-video)")
+	flag.Var(&opts.referenceVideos, "reference-video", "Seedance reference video(s); repeat or comma-separate (2.5 up to 10, 2.0 up to 3)")
+	flag.Var(&opts.referenceAudios, "reference-audio", "Seedance reference audio(s); repeat or comma-separate (2.5 up to 10, 2.0 up to 3)")
+	flag.IntVar(&opts.videoDuration, "video-duration", 0, "Video duration in seconds: Grok/xai 1-15; Seedance 2.5 -1 or 4-30; Seedance 2.0 -1 or 4-15 (default: 5)")
 	flag.StringVar(&opts.imageResolution, "image-resolution", "", "Image resolution for models that size by target: flux-2-pro 0.5mp/1mp/2mp/4mp; nano-banana-2 1k/2k/4k")
-	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Kling 720p/1080p/4k (default: 1080p); MiniMax H3 768p/2k (default: 768p); Grok 480p/720p; xai 480p/720p; Seedance 480p/720p/1080p (default: 720p)")
+	flag.StringVar(&opts.videoResolution, "video-resolution", "", "Video resolution: Kling 720p/1080p/4k (default: 1080p); MiniMax H3 768p/2k (default: 768p); Grok/xai 480p/720p; Seedance 2.5 480p/720p, Seedance 2.0 also 1080p (default: 720p)")
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
 	flag.BoolVar(&opts.stripAudio, "strip-audio", true, "Strip the audio track from generated videos via ffmpeg if installed (default: true)")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
@@ -742,16 +752,16 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.instrumental, "instrumental", true, "Music models: render an instrumental track (default: true for -model music, false for -model music-vocal; -lyrics implies vocals)")
 	flag.StringVar(&opts.lyrics, "lyrics", "", "Song lyrics for -model music-vocal: TEXT, or @file.txt (newlines and [Verse]/[Chorus] tags welcome)")
 	flag.Float64Var(&opts.duration, "duration", 0, "Audio length in seconds: -model music 5-300 (default 10); -model sfx 1-190 (default 10); -model music-vocal trims the render locally")
-	flag.StringVar(&opts.voice, "voice", "", "TTS voice: -model tts any voice id (default English_Wiselady); -model tts-elevenlabs a name from the enum (default Rachel); -model tts-openai a name from the enum (default sage)")
-	flag.StringVar(&opts.emotion, "emotion", "", "TTS delivery emotion for -model tts: auto, happy, sad, angry, fearful, disgusted, surprised, calm, fluent, neutral (default: auto)")
-	flag.Float64Var(&opts.speed, "speed", 0, "TTS speaking rate (0 = model default): -model tts 0.5-2; -model tts-elevenlabs 0.7-1.2; -model tts-openai 0.25-4")
-	flag.IntVar(&opts.pitch, "pitch", 0, "TTS pitch shift in semitones for -model tts: -12..12 (default: 0)")
-	flag.StringVar(&opts.instructions, "instructions", "", "TTS delivery steering for -model tts-openai (gpt-4o-mini-tts only), e.g. \"crisp British RP, dry\"")
+	flag.StringVar(&opts.voice, "voice", "", "TTS voice: -model tts a Gemini voice from the enum (default Kore); -model tts-minimax any system or cloned voice id (default English_Wiselady); -model tts-elevenlabs / -model tts-openai a name from their enums (defaults Rachel / sage)")
+	flag.StringVar(&opts.emotion, "emotion", "", "TTS delivery emotion for -model tts-minimax: auto, happy, sad, angry, fearful, disgusted, surprised, calm, fluent, neutral (default: auto)")
+	flag.Float64Var(&opts.speed, "speed", 0, "TTS speaking rate (0 = model default): -model tts-minimax 0.5-2; -model tts-elevenlabs 0.7-1.2; -model tts-openai 0.25-4. -model tts (Gemini) has no speed knob")
+	flag.IntVar(&opts.pitch, "pitch", 0, "TTS pitch shift in semitones for -model tts-minimax: -12..12 (default: 0)")
+	flag.StringVar(&opts.instructions, "instructions", "", "TTS delivery steering for -model tts (Gemini style prompt: tone, pace, accent) and -model tts-openai (gpt-4o-mini-tts), e.g. \"crisp British RP, dry\"")
 	flag.Float64Var(&opts.stability, "stability", -1, "TTS voice stability for -model tts-elevenlabs: 0-1 (default: 0.5)")
 	flag.Float64Var(&opts.style, "style", -1, "TTS style exaggeration for -model tts-elevenlabs: 0-1 (default: 0)")
-	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
+	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-8 (default: 4); -model upscale-esrgan 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
 
-	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement (upscale models only)")
+	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement: -model upscale-esrgan or -model upscale-pro only")
 
 	flag.DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Polling interval for replicate")
 	flag.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Overall timeout (0 disables)")
@@ -952,16 +962,18 @@ SYNOPSIS
 
 DESCRIPTION
   Generates images using gpt-image-2.5 (default; gpt-image-2, FLUX.2 [pro] and
-  Nano Banana 2 are also available), videos with Seedance 2.0 on Replicate (default
-  for mp4; Kling 3.0, MiniMax H3, Grok Imagine Video also selectable),
-  music and sound effects with ElevenLabs Music (-model music), MiniMax
-  Music 2.6 (-model music-vocal) and Stable Audio 2.5 (-model sfx), text to
-  speech with MiniMax Speech 2.8 HD (-model tts), ElevenLabs v3 (-model
+  Nano Banana 2 are also available), videos with Seedance 2.5 on Replicate
+  (default for mp4; Seedance 2.0 for 1080p, Kling 3.0, MiniMax H3, Grok
+  Imagine Video also selectable), music and sound effects with ElevenLabs
+  Music (-model music), MiniMax Music 2.6 (-model music-vocal) and Stable
+  Audio 2.5 (-model sfx), text to speech with Gemini 3.1 Flash TTS (-model
+  tts), MiniMax Speech 2.8 HD (-model tts-minimax), ElevenLabs v3 (-model
   tts-elevenlabs) and OpenAI gpt-4o-mini-tts (-model tts-openai),
   talking heads and lip-sync with Kling Avatar 2.0 (-model kling-avatar) and
   Sync Labs lipsync-2-pro (-model lipsync), removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
-  nightmareai/real-esrgan (-model upscale) on Replicate. Saves to
+  prunaai/p-image-upscale (-model upscale; Real-ESRGAN via -model
+  upscale-esrgan, Topaz via -model upscale-pro) on Replicate. Saves to
   ~/Desktop/curds/<unix_milli>.<format> unless -output is given. Auto-creates
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
   when prompt or token is missing (suppress with -no-tui). The separate
@@ -984,16 +996,18 @@ PROVIDERS
 
   replicate  Replicate hosted
              Endpoint:  POST /v1/models/<owner>/<name>/predictions
-             Default image model: openai/gpt-image-2
-             Default video model: bytedance/seedance-2.0
-             Also available: -model flux-2-pro, nano-banana-2,
-                             kling-v3, kling-avatar, minimax-h3, lipsync,
-                             music, music-vocal (alias minimax-music), sfx,
-                             tts, tts-elevenlabs,
-                             grok-imagine-video-1.5, upscale-pro
-             Raw passthrough: -model owner/name via the "curds run" subcommand
-                              runs any Replicate model with caller-supplied
-                              inputs (see RUN SUBCOMMAND).
+            Default image model: openai/gpt-image-2
+            Default video model: bytedance/seedance-2.5
+            Also available: -model flux-2-pro, nano-banana-2,
+                            seedance-2 (1080p), kling-v3, kling-avatar,
+                            minimax-h3, lipsync,
+                            music, music-vocal (alias minimax-music), sfx,
+                            tts, tts-minimax, tts-elevenlabs,
+                            grok-imagine-video-1.5, upscale, upscale-esrgan,
+                            upscale-pro
+            Raw passthrough: -model owner/name via the "curds run" subcommand
+                             runs any Replicate model with caller-supplied
+                             inputs (see RUN SUBCOMMAND).
              Use when: you don't have direct OpenAI access yet, or you
              want to run a non-OpenAI image or video model hosted on Replicate.
              Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
@@ -1012,7 +1026,7 @@ PROVIDERS
   Provider auto-detect (when -provider is omitted):
     1. config.provider in ~/.config/curds/config.toml
     2. for mp4 output with no -model, config.default_video_model
-       (seedance-2 → replicate); xai is used instead when no replicate
+       (seedance-2.5 → replicate); xai is used instead when no replicate
        token is available but an xai token is.
     3. token availability — OpenAI is preferred for images when present.
 
@@ -1120,14 +1134,20 @@ FLAGS
                                 ignored.
 
   Upscaling / super-resolution
-    -model upscale              run nightmareai/real-esrgan on Replicate.
+    -model upscale              run prunaai/p-image-upscale on Replicate.
                                 Requires exactly one -input-image (file path,
                                 http(s) URL, or data URL). No -prompt.
-                                Output is an upscaled PNG. Output format is
-                                forced to png and -aspect-ratio / -size are
-                                ignored.
-    -scale N                    upscale factor, 1-10 (default: 4)
-    -face-enhance               run GFPGAN face enhancement
+                                Output is a PNG by default (-output-format
+                                png/jpeg/webp selectable); -aspect-ratio /
+                                -size are ignored. No face enhancement.
+    -scale N                    upscale factor, 1-8 (default: 4)
+    -model upscale-esrgan       run nightmareai/real-esrgan instead — the
+                                2021-era upscaler, and the one with GFPGAN
+                                face enhancement. -scale accepts 1-10
+                                (default: 4); -face-enhance allowed.
+    -face-enhance               run GFPGAN face enhancement. -model
+                                upscale-esrgan and -model upscale-pro only;
+                                a usage error (exit 2) elsewhere.
     -model upscale-pro          run topazlabs/image-upscale instead — a
                                 modern alternative to Real-ESRGAN. -scale
                                 accepts 2, 4, or 6 (omit for enhance-only);
@@ -1135,15 +1155,18 @@ FLAGS
 
   Video (xai / Replicate)
     -poll-interval DURATION     status poll cadence (default: 2s)
-    -video-duration N           Seedance: -1 or 4-15 seconds; Kling: 3-15;
+    -video-duration N           Seedance 2.5: -1 or 4-30 seconds;
+                                Seedance 2.0: -1 or 4-15; Kling: 3-15;
                                 MiniMax H3: 4-15; xai/Grok: 1-15
                                 (default: 5)
     -video-resolution VALUE      Kling: 720p, 1080p, 4k (default: 1080p);
                                 Kling Avatar: 720p (std) or 1080p (pro),
                                 default 1080p;
                                 MiniMax H3: 768p, 2k (default: 768p);
-                                Grok/xai: 480p, 720p; Seedance also 1080p
-                                (default: 720p); lipsync ignores it
+                                Grok/xai: 480p, 720p;
+                                Seedance 2.5: 480p, 720p (default: 720p),
+                                Seedance 2.0 also 1080p;
+                                lipsync ignores it
     -no-audio                    disable Seedance / Kling synchronized audio
                                 (MiniMax H3 and xai/Grok always emit audio)
     -strip-audio                 remove the audio track from generated
@@ -1157,13 +1180,18 @@ FLAGS
     -seed N                      random seed for supported Replicate models
     -last-frame-image PATH       Seedance / Kling / MiniMax H3 last frame;
                                 requires -input-image
-    -input-image PATH            Seedance first frame or reference images;
+    -input-image PATH            Seedance first frame, or references when
+                                more than one is given (Seedance 2.5 takes a
+                                first frame plus up to 30 references);
                                 Kling / MiniMax H3 first frame (0 or 1);
                                 xai/Grok image-to-video source (1)
-    -reference-image PATH        MiniMax H3 / Seedance up to 9; xai
-                                grok-imagine-video refs
-    -reference-video PATH        MiniMax H3 / Seedance reference video(s), up to 3
-    -reference-audio PATH        MiniMax H3 / Seedance reference audio(s), up to 3
+    -reference-image PATH        Seedance 2.5 up to 30, Seedance 2.0 /
+                                MiniMax H3 up to 9; xai grok-imagine-video
+                                refs
+    -reference-video PATH        Seedance reference video(s): 2.5 up to 10,
+                                2.0 up to 3; MiniMax H3 up to 3
+    -reference-audio PATH        Seedance reference audio(s): 2.5 up to 10,
+                                2.0 up to 3; MiniMax H3 up to 3
 
   Talking heads / lip-sync (Replicate)
     -model kling-avatar          Kling Avatar 2.0: one portrait
@@ -1218,32 +1246,46 @@ FLAGS
                                  the prompt.
 
   Text to speech
-    -model tts                   MiniMax Speech 2.8 HD
-                                 (minimax/speech-2.8-hd) on Replicate: the
-                                 default TTS model. Narration from -prompt,
-                                 with -voice, -emotion, -speed, and -pitch.
+    -model tts                   Gemini 3.1 Flash TTS
+                                 (google/gemini-3.1-flash-tts) on Replicate:
+                                 the default TTS model. 30 voices, 70+
+                                 languages, and a natural-language style
+                                 prompt via -instructions ("warm, slow,
+                                 British"). Returns WAV; an mp3 -output is
+                                 transcoded via ffmpeg.
+    -model tts-minimax           MiniMax Speech 2.8 HD
+                                 (minimax/speech-2.8-hd) on Replicate:
+                                 narration with -voice, -emotion, -speed,
+                                 and -pitch.
     -model tts-elevenlabs        ElevenLabs v3 (elevenlabs/v3) on Replicate:
-                                 expressive TTS. Inline audio tags such as
-                                 [sarcastic] or [whispers] go in the text.
+                                 -voice, -stability, and -style. The text is
+                                 read verbatim — bracketed markers in it are
+                                 spoken aloud, not interpreted.
     -model tts-openai            OpenAI gpt-4o-mini-tts via the openai
                                  provider: accepts -instructions
                                  ("crisp British RP, dry"). -model tts-1-hd
                                  is the earlier model (no -instructions).
-    -voice NAME                  voice id/name (default: English_Wiselady /
-                                 Rachel / sage). -model tts takes any system
-                                 voice or cloned id; the other two validate
-                                 against their enums (see TEXT TO SPEECH).
-    -emotion VALUE               -model tts only: auto, happy, sad, angry,
-                                 fearful, disgusted, surprised, calm, fluent,
-                                 neutral (default: auto).
+    -voice NAME                  voice name/id (defaults: Kore for -model
+                                 tts, English_Wiselady for -model
+                                 tts-minimax, Rachel for -model
+                                 tts-elevenlabs, sage for -model tts-openai).
+                                 -model tts-minimax takes any system voice
+                                 or cloned id; the others validate against
+                                 their enums (see TEXT TO SPEECH).
+    -emotion VALUE               -model tts-minimax only: auto, happy, sad,
+                                 angry, fearful, disgusted, surprised, calm,
+                                 fluent, neutral (default: auto).
     -speed N                     speaking rate (0 = model default):
-                                 -model tts 0.5-2; -model tts-elevenlabs
-                                 0.7-1.2; -model tts-openai 0.25-4.
-    -pitch N                     -model tts only: shift in semitones, -12..12
-                                 (default: 0).
-    -instructions TEXT           -model tts-openai (gpt-4o-mini-tts) only:
-                                 delivery steering, e.g. "crisp British RP,
-                                 dry".
+                                 -model tts-minimax 0.5-2; -model
+                                 tts-elevenlabs 0.7-1.2; -model tts-openai
+                                 0.25-4. -model tts (Gemini) has no speed
+                                 knob; steer pace with -instructions.
+    -pitch N                     -model tts-minimax only: shift in semitones,
+                                 -12..12 (default: 0).
+    -instructions TEXT           style/delivery steering for -model tts
+                                 (Gemini's style prompt: tone, pace, accent)
+                                 and -model tts-openai (gpt-4o-mini-tts),
+                                 e.g. "crisp British RP, dry".
     -stability N                 -model tts-elevenlabs only: voice stability
                                  0-1 (default: 0.5).
     -style N                     -model tts-elevenlabs only: style
@@ -1286,21 +1328,31 @@ TEXT TO SPEECH
   Three models read -prompt (or stdin) aloud; all save mp3 or wav and require
   -no-tui (or a prompt) like any other model.
 
-  -model tts            MiniMax Speech 2.8 HD (minimax/speech-2.8-hd) on
-                        Replicate is the default TTS model: natural narration
-                        from up to 10000 characters, with <#0.5#> pause
-                        markers. -voice takes any system voice id or a cloned
-                        id (default English_Wiselady); -emotion, -speed
-                        (0.5-2), and -pitch (-12..12) tune the delivery. curds
-                        asks for 44.1 kHz output (256 kbps mp3) and turns on
-                        English normalization so numbers and dates read
-                        naturally.
-  -model tts-elevenlabs  ElevenLabs v3 (elevenlabs/v3) on Replicate is the
-                        expressive option: inline audio tags like [sarcastic],
-                        [whispers], or [laughs] in the text, with -stability
-                        and -style per voice. -voice picks from the enum below
-                        (default Rachel). It returns mp3; a .wav -output is
-                        transcoded locally via ffmpeg.
+  -model tts            Gemini 3.1 Flash TTS (google/gemini-3.1-flash-tts) on
+                        Replicate is the default TTS model: 30 voices, 70+
+                        languages (the language follows the model's own
+                        default, en-US), and a natural-language style prompt.
+                        -instructions describes how to speak it ("warm and
+                        slow, British accent"); -voice picks from the enum
+                        below (default Kore). Text and style prompt are each
+                        capped at 4000 bytes. The model returns WAV, so a
+                        -output .mp3 is transcoded locally via ffmpeg.
+  -model tts-minimax    MiniMax Speech 2.8 HD (minimax/speech-2.8-hd) on
+                        Replicate: natural narration from up to 10000
+                        characters, with <#0.5#> pause markers. -voice takes
+                        any system voice id or a cloned id (default
+                        English_Wiselady); -emotion, -speed (0.5-2), and
+                        -pitch (-12..12) tune the delivery. curds asks for
+                        44.1 kHz output (256 kbps mp3) and turns on English
+                        normalization so numbers and dates read naturally.
+  -model tts-elevenlabs  ElevenLabs v3 (elevenlabs/v3) on Replicate: -voice,
+                        -stability, and -style per voice. The text is read
+                        verbatim: bracketed emotion markers in it are spoken
+                        aloud, not interpreted, because the Replicate
+                        deployment does not parse them.
+                        -voice picks from the enum below (default Rachel). It
+                        returns mp3; a .wav -output is transcoded locally via
+                        ffmpeg.
   -model tts-openai     OpenAI gpt-4o-mini-tts via the openai provider's
                         POST /v1/audio/speech endpoint. -instructions steers
                         accent and tone ("crisp British RP, dry"); -voice
@@ -1310,6 +1362,12 @@ TEXT TO SPEECH
                         characters.
 
   -voice values:
+    gemini-3.1-flash-tts  Achernar, Achird, Algenib, Algieba, Alnilam, Aoede,
+                        Autonoe, Callirrhoe, Charon, Despina, Enceladus,
+                        Erinome, Fenrir, Gacrux, Iapetus, Kore, Laomedeia,
+                        Leda, Orus, Pulcherrima, Puck, Rasalgethi, Sadachbia,
+                        Sadaltager, Schedar, Sulafat, Umbriel, Vindemiatrix,
+                        Zephyr, Zubenelgenubi
     elevenlabs/v3        Rachel, Drew, Clyde, Paul, Aria, Domi, Dave, Roger,
                         Fin, Sarah, James, Jane, Juniper, Arabella, Hope,
                         Bradford, Reginald, Gaming, Austin, Kuon, Blondie,
@@ -1320,10 +1378,12 @@ TEXT TO SPEECH
                         curds run -schema minimax/speech-2.8-hd
 
   Flags that do not apply to the chosen TTS model are usage errors (exit 2):
-  -emotion / -pitch belong to -model tts, -stability / -style to
-  -model tts-elevenlabs, and -instructions to -model tts-openai. -speed and
-  -voice apply to all three, each with its own range and enum. Pipe a script
-  in: cat script.txt | curds -model tts -output line.wav
+  -emotion / -pitch belong to -model tts-minimax, -stability / -style to
+  -model tts-elevenlabs, and -instructions to -model tts and -model
+  tts-openai. -speed applies to -model tts-minimax / tts-elevenlabs /
+  tts-openai (Gemini has no speed knob), and -voice applies to all four, each
+  with its own range and enum. Pipe a script in:
+  cat script.txt | curds -model tts -output line.wav
 
 RUN SUBCOMMAND
   curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]
@@ -1345,11 +1405,12 @@ RUN SUBCOMMAND
     tokens come from the same chain as the main command. See "curds run -h".
 
 SEEDANCE FACE REJECTION
-  Seedance 2.0 rejects any input image containing a realistic human face with
-  "flagged as sensitive (E005)". When a Seedance prediction fails that way and
-  the request carried an image, curds retries once on Kling 3.0 with the same
-  prompt, the first image as start_image, the last frame as end_image, the
-  duration clamped to Kling's 3-15s, and a mapped ratio and resolution.
+  Both Seedance versions (2.5 and 2.0) reject any input image containing a
+  realistic human face with "flagged as sensitive (E005)". When a Seedance
+  prediction fails that way and the request carried an image, curds retries
+  once on Kling 3.0 with the same prompt, the first image as start_image, the
+  last frame as end_image, the duration clamped to Kling's 3-15s, and a mapped
+  ratio and resolution.
   Logged as event=model.fallback. -no-fallback turns the retry off and returns
   the original error (with hint="retry with -model kling-v3" in the log).
 
@@ -1359,6 +1420,8 @@ ASPECT RATIOS
                                        9:16, 3:4, 3:2, 2:3
   xai grok-imagine-video accepts:       auto, 1:1, 16:9, 9:16,
                                        4:3, 3:4, 3:2, 2:3
+  Seedance 2.5 accepts:                 16:9, 4:3, 1:1, 3:4,
+                                       9:16, 21:9, adaptive
   Seedance 2.0 accepts:                 16:9, 4:3, 1:1, 3:4,
                                        9:16, 21:9, 9:21, adaptive
   MiniMax H3 accepts:                   21:9, 16:9, 4:3, 1:1, 3:4,
@@ -1454,7 +1517,7 @@ EXAMPLES
         -input-image hero.png,logo.png \
         -prompt "hero shot with the logo on the bottle" -output /tmp/comp.png
 
-  # Generate video with the default video model (Seedance 2.0 via Replicate):
+  # Generate video with the default video model (Seedance 2.5 via Replicate):
   #   text-to-video, no input image required
   curds -prompt "a slow serene time-lapse of the milky way" -output /tmp/sky.mp4
 
@@ -1478,26 +1541,38 @@ EXAMPLES
         -prompt "a smooth product turn with soft studio camera motion" \
         -output /tmp/grok.mp4
 
-  # Generate a Seedance 2.0 video via Replicate
-  curds -provider replicate -model seedance-2 \
+  # Generate a Seedance 2.5 video via Replicate (480p/720p, up to 30s)
+  curds -provider replicate -model seedance-2.5 \
+        -prompt "a cinematic 20 second shot of a glass sculpture forming" \
+        -aspect-ratio 16:9 -video-duration 20 -output /tmp/seedance.mp4
+
+  # Seedance 2.0 with 1080p, or Seedance 2.5 with a 6-frame character sheet
+  curds -model seedance-2 -video-resolution 1080p \
         -prompt "a cinematic 5 second shot of a glass sculpture forming" \
-        -aspect-ratio 16:9 -video-duration 5 -output /tmp/seedance.mp4
+        -output /tmp/seedance-1080p.mp4
+  curds -model seedance-2.5 -reference-image char1.png,char2.png,char3.png \
+        -prompt "the character walks through a rainy market" \
+        -output /tmp/seedance-refs.mp4
 
   # Remove the background → transparent PNG (BRIA RMBG 2.0 on Replicate)
   curds -provider replicate -model remove-bg \
         -input-image photo.jpg -output cutout.png
 
-  # Upscale 4x → PNG (Real-ESRGAN on Replicate)
+  # Upscale 4x → PNG (prunaai/p-image-upscale on Replicate)
   curds -provider replicate -model upscale \
         -input-image small.jpg -scale 4 -output big.png
+
+  # Same upscaler, WebP output instead of PNG
+  curds -provider replicate -model upscale -output-format webp \
+        -input-image small.jpg -scale 2 -output big.webp
+
+  # Real-ESRGAN: portrait with face enhancement
+  curds -provider replicate -model upscale-esrgan -face-enhance \
+        -input-image headshot.jpg -output headshot-4x.png
 
   # Upscale 4x with Topaz instead (better on faces and text)
   curds -model upscale-pro -input-image small.jpg -scale 4 \
         -face-enhance -output big.png
-
-  # Upscale a portrait with face enhancement
-  curds -provider replicate -model upscale -face-enhance \
-        -input-image headshot.jpg -output headshot-4x.png
 
   # Talking head: animate a portrait with an audio clip (Kling Avatar 2.0)
   curds -model kling-avatar -input-image portrait.png -audio voice.mp3 \
@@ -1527,14 +1602,19 @@ EXAMPLES
         -prompt "steady heavy rain on a tin roof, distant thunder" \
         -output /tmp/rain.wav
 
-  # Narration line with a voice and emotion (MiniMax Speech 2.8 HD)
-  curds -model tts -voice English_Deep-VoicedGentleman -emotion calm \
+  # Narration with a voice and emotion (MiniMax Speech 2.8 HD)
+  curds -model tts-minimax -voice English_Deep-VoicedGentleman -emotion calm \
         -prompt "Chapter one. The rain had not stopped for a week." \
         -output /tmp/line.mp3
 
-  # ElevenLabs v3 with an inline audio tag (delivery is in the text)
-  curds -model tts-elevenlabs -voice Rachel \
-        -prompt "[sarcastic] Oh, brilliant. Another Monday." \
+  # Default TTS: Gemini 3.1 Flash TTS with a style prompt
+  curds -model tts -voice Kore -instructions "warm and slow, British accent" \
+        -prompt "The results, I'm afraid, are conclusive." \
+        -output /tmp/line.wav
+
+  # ElevenLabs v3 with stability/style knobs (text is read verbatim)
+  curds -model tts-elevenlabs -voice Rachel -style 0.8 \
+        -prompt "Oh, brilliant. Another Monday." \
         -output /tmp/line.mp3
 
   # OpenAI gpt-4o-mini-tts with delivery instructions
@@ -1543,7 +1623,7 @@ EXAMPLES
         -output /tmp/line.wav
 
   # Read a whole script from a file
-  cat script.txt | curds -model tts -output /tmp/narration.wav
+  cat script.txt | curds -model tts-minimax -output /tmp/narration.wav
 
   # Any other audio model, raw inputs (see "curds run -h")
   curds run -schema owner/audio-model
@@ -2115,6 +2195,33 @@ func validateMediaInputs(model string, opts *cliOptions) error {
 	return nil
 }
 
+// validateVideoFlags mirrors the per-version video contract so a flag the
+// chosen model cannot honor fails as a usage error (exit 2) naming the way
+// out, instead of an upstream 400 after the paid round trip. The library
+// re-checks the same contract for non-CLI callers.
+func validateVideoFlags(model string, opts *cliOptions) error {
+	if !curds.IsSeedance25Model(model) {
+		return nil
+	}
+	switch res := strings.ToLower(strings.TrimSpace(opts.videoResolution)); res {
+	case "", "480p", "720p":
+		return nil
+	default:
+		return fmt.Errorf("-video-resolution %s is not available on Seedance 2.5 (480p/720p only); choose -video-resolution 720p, or -model seedance-2 / -model kling-v3 for %s", res, res)
+	}
+}
+
+// validateUpscaleFlags mirrors the one upscale contract the CLI cannot defer:
+// -face-enhance belongs to the upscalers that implement it. Passing it to the
+// default prunaai/p-image-upscale would otherwise reach the model and come
+// back as an ignored field or an upstream error.
+func validateUpscaleFlags(model string, opts *cliOptions) error {
+	if opts.faceEnhance && curds.IsPrunaUpscaleModel(model) {
+		return errors.New("-face-enhance is not supported by -model upscale (prunaai/p-image-upscale); use -model upscale-pro or -model upscale-esrgan")
+	}
+	return nil
+}
+
 // resolveLyrics turns -lyrics @file.txt into the file's contents. A bare value
 // is the lyrics themselves. Runs before validation so the model checks see the
 // real text.
@@ -2219,9 +2326,33 @@ func validateTTSFlags(model string, opts *cliOptions) error {
 	}
 	textLen := utf8.RuneCountInString(opts.prompt)
 	switch {
+	case curds.IsTTSGeminiModel(model):
+		// -1 is the flag's "model default" sentinel, so any value at or above
+		// zero means the caller asked for stability/style.
+		if opts.stability >= 0 || opts.style >= 0 {
+			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
+		}
+		if opts.emotion != "" {
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if opts.pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if opts.speed != 0 {
+			return errors.New("-speed is not supported by -model tts (Gemini 3.1 Flash TTS); steer pace with -instructions")
+		}
+		if opts.voice != "" && !curds.GeminiTTSVoices[opts.voice] {
+			return fmt.Errorf("-voice %q is not a valid -model tts voice (valid: %s)", opts.voice, curds.SortedNames(curds.GeminiTTSVoices))
+		}
+		if len(opts.prompt) > curds.MaxGeminiTTSBytes {
+			return fmt.Errorf("text is %d bytes; -model tts accepts at most %d", len(opts.prompt), curds.MaxGeminiTTSBytes)
+		}
+		if len(opts.instructions) > curds.MaxGeminiTTSBytes {
+			return fmt.Errorf("-instructions is %d bytes; -model tts accepts at most %d", len(opts.instructions), curds.MaxGeminiTTSBytes)
+		}
 	case curds.IsTTSSpeechModel(model):
 		if opts.instructions != "" {
-			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+			return errors.New("-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai (gpt-4o-mini-tts)")
 		}
 		if flagWasSet("stability") || flagWasSet("style") {
 			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
@@ -2230,23 +2361,23 @@ func validateTTSFlags(model string, opts *cliOptions) error {
 			return fmt.Errorf("-emotion must be one of %s, got %q", curds.SortedNames(curds.MinimaxTTSEmotions), opts.emotion)
 		}
 		if opts.speed != 0 && (opts.speed < 0.5 || opts.speed > 2) {
-			return fmt.Errorf("-speed must be 0.5-2 for -model tts, got %g", opts.speed)
+			return fmt.Errorf("-speed must be 0.5-2 for -model tts-minimax, got %g", opts.speed)
 		}
 		if opts.pitch < -12 || opts.pitch > 12 {
-			return fmt.Errorf("-pitch must be -12..12 for -model tts, got %d", opts.pitch)
+			return fmt.Errorf("-pitch must be -12..12 for -model tts-minimax, got %d", opts.pitch)
 		}
 		if textLen > curds.MaxTTSTextChars {
-			return fmt.Errorf("text is %d characters; -model tts accepts at most %d", textLen, curds.MaxTTSTextChars)
+			return fmt.Errorf("text is %d characters; -model tts-minimax accepts at most %d", textLen, curds.MaxTTSTextChars)
 		}
 	case curds.IsTTSElevenLabsModel(model):
 		if opts.instructions != "" {
-			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+			return errors.New("-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai (gpt-4o-mini-tts)")
 		}
 		if opts.emotion != "" {
-			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if opts.pitch != 0 {
-			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if opts.speed != 0 && (opts.speed < 0.7 || opts.speed > 1.2) {
 			return fmt.Errorf("-speed must be 0.7-1.2 for -model tts-elevenlabs, got %g", opts.speed)
@@ -2262,10 +2393,10 @@ func validateTTSFlags(model string, opts *cliOptions) error {
 		}
 	case curds.IsOpenAITTSModel(model):
 		if opts.emotion != "" {
-			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if opts.pitch != 0 {
-			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if flagWasSet("stability") || flagWasSet("style") {
 			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")

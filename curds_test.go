@@ -2816,3 +2816,323 @@ func TestSeedanceFaceRejectionFallsBackToKling(t *testing.T) {
 		}
 	})
 }
+
+// --- September 2026 frontier defaults: Seedance 2.5 and p-image-upscale ----
+
+// Seedance 2.5 raised every reference ceiling, dropped 1080p, and doubles the
+// duration cap. Validation must be model-aware, and the 1080p rejection has to
+// name the models that still offer it.
+func TestRequestValidateSeedance25(t *testing.T) {
+	base := func(model string) Request {
+		r := Request{
+			Provider:        ProviderReplicate,
+			Token:           "tk",
+			Model:           model,
+			Prompt:          "a glass sculpture forming",
+			NumImages:       1,
+			OutputFormat:    "mp4",
+			AspectRatio:     "16:9",
+			VideoResolution: "720p",
+		}
+		r.applyDefaults()
+		return r
+	}
+	cases := []struct {
+		name       string
+		model      string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"2.5 duration 30 is the cap", Seedance25VideoModel, func(r *Request) { r.VideoDuration = 30 }, ""},
+		{"2.5 duration 31 is rejected", Seedance25VideoModel, func(r *Request) { r.VideoDuration = 31 }, "4-30 seconds for Seedance 2.5"},
+		{"2.5 duration 3 is rejected", Seedance25VideoModel, func(r *Request) { r.VideoDuration = 3 }, "4-30 seconds"},
+		{"2.5 duration -1 is intelligent", Seedance25VideoModel, func(r *Request) { r.VideoDuration = -1 }, ""},
+		{"2.5 rejects 1080p with a way out", Seedance25VideoModel, func(r *Request) { r.VideoResolution = "1080p" }, "-model seedance-2"},
+		{"2.5 rejects 4k with a way out", Seedance25VideoModel, func(r *Request) { r.VideoResolution = "4k" }, "-model kling-v3"},
+		{"2.5 rejects an unknown resolution", Seedance25VideoModel, func(r *Request) { r.VideoResolution = "1440p" }, "480p or 720p for Seedance 2.5"},
+		{"2.5 accepts 30 reference images", Seedance25VideoModel, func(r *Request) {
+			r.ReferenceImages = make([]string, 30)
+		}, ""},
+		{"2.5 rejects 31 reference images", Seedance25VideoModel, func(r *Request) {
+			r.ReferenceImages = make([]string, 31)
+		}, "at most 30 reference images"},
+		{"2.5 accepts 10 reference videos", Seedance25VideoModel, func(r *Request) {
+			r.ReferenceVideos = make([]string, 10)
+		}, ""},
+		{"2.5 rejects 11 reference videos", Seedance25VideoModel, func(r *Request) {
+			r.ReferenceVideos = make([]string, 11)
+		}, "at most 10 reference videos"},
+		{"2.5 accepts 10 reference audios", Seedance25VideoModel, func(r *Request) {
+			r.ReferenceImages = []string{"https://example.com/a.png"}
+			r.ReferenceAudios = make([]string, 10)
+		}, ""},
+		{"2.5 rejects 11 reference audios", Seedance25VideoModel, func(r *Request) {
+			r.ReferenceImages = []string{"https://example.com/a.png"}
+			r.ReferenceAudios = make([]string, 11)
+		}, "at most 10 reference audios"},
+		{"2.5 dropped 9:21", Seedance25VideoModel, func(r *Request) { r.AspectRatio = "9:21" }, "aspect_ratio must be one of"},
+		{"2.5 keeps adaptive", Seedance25VideoModel, func(r *Request) { r.AspectRatio = "adaptive" }, ""},
+
+		{"2.0 duration 15 is the cap", SeedanceVideoModel, func(r *Request) { r.VideoDuration = 15 }, ""},
+		{"2.0 duration 16 is rejected", SeedanceVideoModel, func(r *Request) { r.VideoDuration = 16 }, "4-15 seconds for Seedance 2.0"},
+		{"2.0 keeps 1080p", SeedanceVideoModel, func(r *Request) { r.VideoResolution = "1080p" }, ""},
+		{"2.0 keeps 9:21", SeedanceVideoModel, func(r *Request) { r.AspectRatio = "9:21" }, ""},
+		{"2.0 rejects 10 reference images", SeedanceVideoModel, func(r *Request) {
+			r.ReferenceImages = make([]string, 10)
+		}, "at most 9 reference images"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base(tc.model)
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErrSub, err)
+			}
+		})
+	}
+}
+
+// The -input-image cap rises for Seedance (one first frame plus the
+// model-aware reference set) and stays put for every other model.
+func TestMaxInputImagesForSeedance(t *testing.T) {
+	cases := map[string]int{
+		Seedance25VideoModel: 31,
+		SeedanceVideoModel:   10,
+		"openai/gpt-image-2": MaxInputImages,
+		"":                   MaxInputImages,
+	}
+	for model, want := range cases {
+		if got := MaxInputImagesFor(model); got != want {
+			t.Errorf("MaxInputImagesFor(%q) = %d want %d", model, got, want)
+		}
+	}
+}
+
+func TestReplicateProviderSeedance25VideoHappyPath(t *testing.T) {
+	video := assetServer(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/models/bytedance/seedance-2.5/predictions") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		input, _ := b["input"].(map[string]any)
+		if input["duration"] != float64(30) {
+			t.Errorf("duration: %v", input["duration"])
+		}
+		if input["resolution"] != "720p" || input["aspect_ratio"] != "16:9" {
+			t.Errorf("resolution/ratio: %v", input)
+		}
+		refs, _ := input["reference_images"].([]any)
+		if len(refs) != 2 {
+			t.Errorf("reference_images: %v", input["reference_images"])
+		}
+		if _, ok := input["watermark"]; ok {
+			t.Errorf("watermark must not be sent (upstream default applies): %v", input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "vid25", "status": "succeeded", "output": video.URL + "/out.mp4",
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{
+		HTTPClient: srv.Client(),
+		Replicate:  &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL},
+	}
+	res, err := c.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           Seedance25VideoModel,
+		Prompt:          "a 30 second tracking shot",
+		AspectRatio:     "16:9",
+		OutputFormat:    "mp4",
+		VideoDuration:   30,
+		VideoResolution: "720p",
+		ReferenceImages: []string{"https://example.com/a.png", "https://example.com/b.png"},
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("want 1 video, got %d", len(res.Videos))
+	}
+}
+
+// The E005 face fallback is a Seedance-wide behavior, not a 2.0 one.
+func TestSeedance25FaceRejectionFallsBackToKling(t *testing.T) {
+	video := assetServer(t)
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/models/bytedance/seedance-2.5") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "seed-25", "status": "failed",
+				"error": "The provided input was flagged as sensitive (E005)",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "kling-1", "status": "succeeded", "output": video.URL + "/out.mp4",
+		})
+	}))
+	defer srv.Close()
+
+	p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+	res, err := p.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           Seedance25VideoModel,
+		Prompt:          "she turns to camera",
+		OutputFormat:    "mp4",
+		NumImages:       1,
+		VideoResolution: "720p",
+		AspectRatio:     "16:9",
+		VideoDuration:   30,
+		InputImages:     []string{"https://example.com/start.png"},
+		PollInterval:    10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("videos: %#v", res.Videos)
+	}
+	if len(paths) != 2 || !strings.HasPrefix(paths[0], "/models/bytedance/seedance-2.5") ||
+		!strings.HasPrefix(paths[1], "/models/kwaivgi/kling-v3-video") {
+		t.Fatalf("expected 2.5 then Kling, got %v", paths)
+	}
+}
+
+// -model upscale is prunaai/p-image-upscale: factor mode, its own container
+// enum, and no face enhancement.
+func TestRequestValidateUpscalePruna(t *testing.T) {
+	base := func() Request {
+		r := Request{
+			Provider:     ProviderReplicate,
+			Token:        "tk",
+			Model:        DefaultUpscaleModel,
+			NumImages:    1,
+			OutputFormat: "png",
+			InputImages:  []string{"https://example.com/cat.jpg"},
+		}
+		r.applyDefaults()
+		return r
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"valid default", func(r *Request) {}, ""},
+		{"accepts scale 8", func(r *Request) { r.Scale = 8 }, ""},
+		{"accepts scale 1", func(r *Request) { r.Scale = 1 }, ""},
+		{"rejects scale 9", func(r *Request) { r.Scale = 9 }, "between 1 and 8"},
+		{"accepts webp", func(r *Request) { r.OutputFormat = "webp" }, ""},
+		{"accepts jpeg", func(r *Request) { r.OutputFormat = "jpeg" }, ""},
+		{"rejects mp4", func(r *Request) { r.OutputFormat = "mp4" }, "must be png, jpeg, or webp"},
+		{"rejects face-enhance", func(r *Request) { r.FaceEnhance = true }, "-face-enhance is not supported by prunaai/p-image-upscale"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErrSub, err)
+			}
+		})
+	}
+}
+
+func TestReplicatePrunaUpscaleInput(t *testing.T) {
+	cases := []struct {
+		name       string
+		format     string
+		scale      float64
+		wantFactor float64
+		wantFormat string
+	}{
+		{"default factor and png", "png", 0, DefaultUpscaleScale, "png"},
+		{"explicit factor", "png", 2, 2, "png"},
+		{"jpeg maps to jpg", "jpeg", 4, 4, "jpg"},
+		{"webp passes through", "webp", 4, 4, "webp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &Request{
+				Provider:     ProviderReplicate,
+				Token:        "tk",
+				Model:        DefaultUpscaleModel,
+				InputImages:  []string{"https://example.com/cat.jpg"},
+				OutputFormat: tc.format,
+				Scale:        tc.scale,
+			}
+			input, err := buildReplicateInput(req)
+			if err != nil {
+				t.Fatalf("buildReplicateInput: %v", err)
+			}
+			if input["upscale_mode"] != "factor" {
+				t.Errorf("upscale_mode: %v", input["upscale_mode"])
+			}
+			if got := input["factor"]; got != tc.wantFactor {
+				t.Errorf("factor: %v want %v", got, tc.wantFactor)
+			}
+			if got := input["output_format"]; got != tc.wantFormat {
+				t.Errorf("output_format: %v want %v", got, tc.wantFormat)
+			}
+			if _, ok := input["scale"]; ok {
+				t.Errorf("pruna takes no numeric scale: %v", input)
+			}
+			if _, ok := input["prompt"]; ok {
+				t.Errorf("upscale must not send a prompt: %v", input)
+			}
+		})
+	}
+}
+
+// The default upscaler changed; the old one must remain selectable with its
+// own contract intact.
+func TestUpscaleModelsAreDistinct(t *testing.T) {
+	cases := map[string]struct {
+		pruna, esrgan, topaz bool
+	}{
+		"prunaai/p-image-upscale":     {pruna: true},
+		"prunaai/p-image-upscale:v1":  {pruna: true},
+		"nightmareai/real-esrgan":     {esrgan: true},
+		"nightmareai/real-esrgan:v2":  {esrgan: true},
+		"topazlabs/image-upscale":     {topaz: true},
+		"nightmareai/real-esrgan-x/y": {},
+		"":                            {},
+	}
+	for model, want := range cases {
+		if got := IsPrunaUpscaleModel(model); got != want.pruna {
+			t.Errorf("IsPrunaUpscaleModel(%q) = %v", model, got)
+		}
+		if got := IsRealESRGANUpscaleModel(model); got != want.esrgan {
+			t.Errorf("IsRealESRGANUpscaleModel(%q) = %v", model, got)
+		}
+		if got := IsTopazUpscaleModel(model); got != want.topaz {
+			t.Errorf("IsTopazUpscaleModel(%q) = %v", model, got)
+		}
+	}
+}

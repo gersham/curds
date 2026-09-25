@@ -335,17 +335,21 @@ func buildReplicateSegmentationInput(req *Request) (map[string]any, error) {
 	return map[string]any{"image": urls[0]}, nil
 }
 
-// buildReplicateUpscaleInput builds the input for nightmareai/real-esrgan
-// (and any future Real-ESRGAN-style super-resolution model we wire in). The
-// model takes a single `image` URL/data-URL, a numeric `scale` factor, and an
-// optional `face_enhance` flag, and returns one upscaled image. No prompt, no
+// buildReplicateUpscaleInput builds the input for whichever super-resolution
+// model curds wraps. Each takes a single `image` URL/data-URL and returns one
+// upscaled image, but they name the factor and the container differently:
+// prunaai/p-image-upscale scales per side by `factor` (or to a target
+// megapixel count) in png/jpg/webp, nightmareai/real-esrgan takes a numeric
+// `scale` plus optional GFPGAN `face_enhance` and returns PNG, and
+// topazlabs/image-upscale takes an `upscale_factor` enum. No prompt, no
 // aspect ratio, no quality knob.
 func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
 	urls, err := encodeMediaAsDataURLs(req.InputImages)
 	if err != nil {
 		return nil, fmt.Errorf("prepare upscale input image: %w", err)
 	}
-	if IsTopazUpscaleModel(req.Model) {
+	switch {
+	case IsTopazUpscaleModel(req.Model):
 		input := map[string]any{
 			"image":          urls[0],
 			"upscale_factor": TopazUpscaleFactor(req.Scale),
@@ -355,27 +359,52 @@ func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
 			input["face_enhancement"] = true
 		}
 		return input, nil
+	case IsRealESRGANUpscaleModel(req.Model):
+		scale := req.Scale
+		if scale == 0 {
+			scale = DefaultUpscaleScale
+		}
+		input := map[string]any{
+			"image": urls[0],
+			"scale": scale,
+		}
+		if req.FaceEnhance {
+			input["face_enhance"] = true
+		}
+		return input, nil
 	}
-	scale := req.Scale
-	if scale == 0 {
-		scale = DefaultUpscaleScale
+	// prunaai/p-image-upscale: multiply each side, in the requested container.
+	factor := req.Scale
+	if factor == 0 {
+		factor = DefaultUpscaleScale
 	}
-	input := map[string]any{
-		"image": urls[0],
-		"scale": scale,
+	return map[string]any{
+		"image":         urls[0],
+		"upscale_mode":  "factor",
+		"factor":        factor,
+		"output_format": prunaUpscaleFormat(req.OutputFormat),
+	}, nil
+}
+
+// prunaUpscaleFormat maps curds' format spelling onto p-image-upscale's enum,
+// which says "jpg" where curds says "jpeg". Empty falls back to png, the
+// container curds requests for the upscalers.
+func prunaUpscaleFormat(format string) string {
+	if strings.TrimSpace(format) == "" {
+		return "png"
 	}
-	if req.FaceEnhance {
-		input["face_enhance"] = true
-	}
-	return input, nil
+	return replicateImageFormat(format)
 }
 
 // buildReplicateAudioInput builds the input for whichever audio model curds
-// wraps: ElevenLabs Music (score), MiniMax Music 2.6 (song), or Stable Audio
-// 2.5 (sound effects). Each names its length and container differently, so the
-// per-model builders below do the mapping.
+// wraps: ElevenLabs Music (score), MiniMax Music 2.6 (song), Stable Audio 2.5
+// (sound effects), or one of the text-to-speech models. Each names its length,
+// text, and container differently, so the per-model builders below do the
+// mapping.
 func buildReplicateAudioInput(req *Request) (map[string]any, error) {
 	switch {
+	case IsTTSGeminiModel(req.Model):
+		return buildReplicateGeminiTTSInput(req), nil
 	case IsTTSSpeechModel(req.Model):
 		return buildReplicateSpeechInput(req), nil
 	case IsTTSElevenLabsModel(req.Model):
@@ -492,6 +521,24 @@ func buildReplicateElevenLabsTTSInput(req *Request) map[string]any {
 	}
 	if req.Style != nil {
 		input["style"] = *req.Style
+	}
+	return input
+}
+
+// buildReplicateGeminiTTSInput builds the input for google/gemini-3.1-flash-tts:
+// the text goes in `text`, the voice comes from its enum, and the style prompt
+// (curds' -instructions) goes in `prompt` — the natural analogue of OpenAI's
+// instructions field, steering tone, pace, accent, and character. The model
+// has no speed knob and no container field: it returns WAV, so an mp3 request
+// is transcoded after download like stable-audio-2.5's container mismatch.
+// Omitting the style prompt keeps the model's own delivery default.
+func buildReplicateGeminiTTSInput(req *Request) map[string]any {
+	input := map[string]any{
+		"text":  req.Prompt,
+		"voice": req.Voice,
+	}
+	if strings.TrimSpace(req.Instructions) != "" {
+		input["prompt"] = req.Instructions
 	}
 	return input
 }

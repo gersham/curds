@@ -29,11 +29,12 @@ provider = ""
 # Default model key (looked up in [models.<key>] below).
 default_model = "gpt-image-2.5"
 
-# Video model key used when output is mp4 and -model is omitted. Seedance 2.0
-# leads on reference handling, multi-scene continuity and native audio. When no
-# replicate token is available but an xai token is, curds falls back to the
-# native "grok-imagine-video" (provider xai).
-default_video_model = "seedance-2"
+# Video model key used when output is mp4 and -model is omitted. Seedance 2.5
+# leads on reference handling (30 images, 10 videos, 10 audios), multi-scene
+# continuity, native audio and clips up to 30s; set "seedance-2" instead for
+# 1080p. When no replicate token is available but an xai token is, curds falls
+# back to the native "grok-imagine-video" (provider xai).
+default_video_model = "seedance-2.5"
 
 # Output settings.
 [output]
@@ -106,9 +107,16 @@ xai_name = "grok-imagine-video"
 [models.grok-imagine-video-1.5]
 replicate_name = "xai/grok-imagine-video-1.5"
 
-# Seedance 2.0 via Replicate. Default video model: text-to-video, first/last
-# frame, up to 9 reference images, 3 reference videos, 3 reference audio clips,
-# and native synchronized audio.
+# Seedance 2.5 via Replicate (-model seedance-2.5). Default video model:
+# text-to-video, first/last frame, up to 30 reference images, 10 reference
+# videos, 10 reference audio clips, native synchronized audio, -1 or 4-30s,
+# 480p/720p.
+[models.seedance-2.5]
+replicate_name = "bytedance/seedance-2.5"
+
+# Seedance 2.0 via Replicate (-model seedance-2). Still selectable: the one
+# Seedance with 1080p, and the narrower reference set (9 images, 3 videos,
+# 3 audios) at 4-15s.
 [models.seedance-2]
 replicate_name = "bytedance/seedance-2.0"
 
@@ -152,15 +160,23 @@ replicate_name = "minimax/music-2.6"
 [models.sfx]
 replicate_name = "stability-ai/stable-audio-2.5"
 
-# MiniMax Speech 2.8 HD via Replicate (-model tts). Default text-to-speech
-# model: natural narration from -prompt, with -voice (system or cloned id),
-# -emotion, -speed, and -pitch, in mp3 or wav at 44.1 kHz.
+# Gemini 3.1 Flash TTS via Replicate (-model tts). Default text-to-speech
+# model: 30 voices, 70+ languages, and a natural-language style prompt
+# (-instructions) steering tone, pace, and accent. Returns WAV; an mp3 -output
+# is transcoded locally.
 [models.tts]
+replicate_name = "google/gemini-3.1-flash-tts"
+
+# MiniMax Speech 2.8 HD via Replicate (-model tts-minimax): natural narration
+# from -prompt, with -voice (system or cloned id), -emotion, -speed, and
+# -pitch, in mp3 or wav at 44.1 kHz.
+[models.tts-minimax]
 replicate_name = "minimax/speech-2.8-hd"
 
 # ElevenLabs v3 via Replicate (-model tts-elevenlabs). Expressive
-# text-to-speech with inline audio tags in the text ([whispers], [laughs]) and
-# -stability / -style. Returns mp3; a .wav -output is transcoded locally.
+# text-to-speech with -stability / -style per voice. The text is read verbatim:
+# bracketed markers in it are spoken aloud, not interpreted. Returns mp3; a
+# .wav -output is transcoded locally.
 [models.tts-elevenlabs]
 replicate_name = "elevenlabs/v3"
 
@@ -180,13 +196,19 @@ openai_name = "tts-1-hd"
 [models.remove-bg]
 replicate_name = "bria/remove-background"
 
-# Super-resolution / upscaling. Replicate-only. Returns a single upscaled PNG.
-# Use with -input-image, -scale, and optional -face-enhance.
+# Super-resolution / upscaling. Replicate-only. Returns a single upscaled PNG
+# by default. Use with -input-image and -scale 1-8 (default 4). -face-enhance
+# is not supported here — use -model upscale-pro or -model upscale-esrgan.
 [models.upscale]
+replicate_name = "prunaai/p-image-upscale"
+
+# Real-ESRGAN (-model upscale-esrgan): the 2021-era upscaler, still the one
+# with GFPGAN -face-enhance. -scale accepts 1-10 (default 4).
+[models.upscale-esrgan]
 replicate_name = "nightmareai/real-esrgan"
 
 # Topaz Labs upscaler (-model upscale-pro). Modern alternative to Real-ESRGAN;
-# -scale accepts 2, 4, or 6 (omit for enhance-only).
+# -scale accepts 2, 4, or 6 (omit for enhance-only), -face-enhance allowed.
 [models.upscale-pro]
 replicate_name = "topazlabs/image-upscale"
 `
@@ -208,17 +230,20 @@ var builtinModels = map[string]ModelConfig{
 	"upscale-pro":            {ReplicateName: "topazlabs/image-upscale"},
 	"grok-imagine-video":     {XaiName: "grok-imagine-video"},
 	"grok-imagine-video-1.5": {ReplicateName: "xai/grok-imagine-video-1.5"},
+	"seedance-2.5":           {ReplicateName: "bytedance/seedance-2.5"},
 	"seedance-2":             {ReplicateName: "bytedance/seedance-2.0"},
 	"remove-bg":              {ReplicateName: "bria/remove-background"},
 	"music":                  {ReplicateName: "elevenlabs/music"},
 	"music-vocal":            {ReplicateName: "minimax/music-2.6"},
 	"minimax-music":          {ReplicateName: "minimax/music-2.6"},
 	"sfx":                    {ReplicateName: "stability-ai/stable-audio-2.5"},
-	"tts":                    {ReplicateName: "minimax/speech-2.8-hd"},
+	"tts":                    {ReplicateName: "google/gemini-3.1-flash-tts"},
+	"tts-minimax":            {ReplicateName: "minimax/speech-2.8-hd"},
 	"tts-elevenlabs":         {ReplicateName: "elevenlabs/v3"},
 	"tts-openai":             {OpenAIName: "gpt-4o-mini-tts"},
 	"tts-1-hd":               {OpenAIName: "tts-1-hd"},
-	"upscale":                {ReplicateName: "nightmareai/real-esrgan"},
+	"upscale":                {ReplicateName: "prunaai/p-image-upscale"},
+	"upscale-esrgan":         {ReplicateName: "nightmareai/real-esrgan"},
 }
 
 // Config is the parsed config file.
@@ -304,7 +329,7 @@ func (c *Config) applyZeroDefaults() {
 		c.DefaultModel = "gpt-image-2.5"
 	}
 	if c.DefaultVideoModel == "" {
-		c.DefaultVideoModel = "seedance-2"
+		c.DefaultVideoModel = "seedance-2.5"
 	}
 	if c.Output.Directory == "" {
 		c.Output.Directory = "~/Desktop/curds"
@@ -336,40 +361,12 @@ func (c *Config) applyZeroDefaults() {
 	// Backfill model keys added after the user's config file was written, so a
 	// new default (or a newly documented -model key) resolves instead of being
 	// passed through to the provider as a raw model name. User entries win.
+	// Scalar defaults are deliberately NOT rewritten: an explicit or
+	// auto-written default_video_model keeps whatever it says, so upgrading
+	// curds never silently changes which model a config asks for.
 	for key, m := range builtinModels {
 		if _, ok := c.Models[key]; !ok {
 			c.Models[key] = m
-		}
-	}
-	if _, ok := c.Models["gpt-image-2"]; !ok {
-		c.Models["gpt-image-2"] = ModelConfig{
-			OpenAIName:    "gpt-image-2",
-			ReplicateName: "openai/gpt-image-2",
-		}
-	}
-	if _, ok := c.Models["grok-imagine-video"]; !ok {
-		c.Models["grok-imagine-video"] = ModelConfig{
-			XaiName: "grok-imagine-video",
-		}
-	}
-	if _, ok := c.Models["grok-imagine-video-1.5"]; !ok {
-		c.Models["grok-imagine-video-1.5"] = ModelConfig{
-			ReplicateName: "xai/grok-imagine-video-1.5",
-		}
-	}
-	if _, ok := c.Models["seedance-2"]; !ok {
-		c.Models["seedance-2"] = ModelConfig{
-			ReplicateName: "bytedance/seedance-2.0",
-		}
-	}
-	if _, ok := c.Models["remove-bg"]; !ok {
-		c.Models["remove-bg"] = ModelConfig{
-			ReplicateName: "bria/remove-background",
-		}
-	}
-	if _, ok := c.Models["upscale"]; !ok {
-		c.Models["upscale"] = ModelConfig{
-			ReplicateName: "nightmareai/real-esrgan",
 		}
 	}
 }

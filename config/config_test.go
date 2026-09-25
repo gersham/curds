@@ -21,7 +21,7 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.DefaultModel != "gpt-image-2.5" {
 		t.Errorf("DefaultModel: %q", cfg.DefaultModel)
 	}
-	if cfg.DefaultVideoModel != "seedance-2" {
+	if cfg.DefaultVideoModel != "seedance-2.5" {
 		t.Errorf("DefaultVideoModel: %q", cfg.DefaultVideoModel)
 	}
 	if cfg.Output.Directory == "" {
@@ -45,14 +45,26 @@ func TestLoadOrCreateAtCreatesDefault(t *testing.T) {
 	if cfg.Models["grok-imagine-video-1.5"].ReplicateName != "xai/grok-imagine-video-1.5" {
 		t.Errorf("grok video replicate name: %q", cfg.Models["grok-imagine-video-1.5"].ReplicateName)
 	}
+	if cfg.Models["seedance-2.5"].ReplicateName != "bytedance/seedance-2.5" {
+		t.Errorf("seedance-2.5 replicate name: %q", cfg.Models["seedance-2.5"].ReplicateName)
+	}
 	if cfg.Models["seedance-2"].ReplicateName != "bytedance/seedance-2.0" {
 		t.Errorf("seedance replicate name: %q", cfg.Models["seedance-2"].ReplicateName)
 	}
 	if cfg.Models["remove-bg"].ReplicateName != "bria/remove-background" {
 		t.Errorf("remove-bg replicate name: %q", cfg.Models["remove-bg"].ReplicateName)
 	}
-	if cfg.Models["upscale"].ReplicateName != "nightmareai/real-esrgan" {
+	if cfg.Models["tts"].ReplicateName != "google/gemini-3.1-flash-tts" {
+		t.Errorf("tts replicate name: %q", cfg.Models["tts"].ReplicateName)
+	}
+	if cfg.Models["tts-minimax"].ReplicateName != "minimax/speech-2.8-hd" {
+		t.Errorf("tts-minimax replicate name: %q", cfg.Models["tts-minimax"].ReplicateName)
+	}
+	if cfg.Models["upscale"].ReplicateName != "prunaai/p-image-upscale" {
 		t.Errorf("upscale replicate name: %q", cfg.Models["upscale"].ReplicateName)
+	}
+	if cfg.Models["upscale-esrgan"].ReplicateName != "nightmareai/real-esrgan" {
+		t.Errorf("upscale-esrgan replicate name: %q", cfg.Models["upscale-esrgan"].ReplicateName)
 	}
 
 	// Second call should NOT recreate.
@@ -275,10 +287,10 @@ func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
 	if got := ResolveModel(cfg, "upscale-pro", "replicate"); got != "topazlabs/image-upscale" {
 		t.Errorf("backfilled upscale-pro: %q", got)
 	}
-	if got := ResolveModel(cfg, cfg.DefaultVideoModel, "replicate"); got != "bytedance/seedance-2.0" {
+	if got := ResolveModel(cfg, cfg.DefaultVideoModel, "replicate"); got != "bytedance/seedance-2.5" {
 		t.Errorf("backfilled default video: %q", got)
 	}
-	if got := ResolveModel(cfg, "upscale", "replicate"); got != "nightmareai/real-esrgan" {
+	if got := ResolveModel(cfg, "upscale", "replicate"); got != "prunaai/p-image-upscale" {
 		t.Errorf("backfilled upscale: %q", got)
 	}
 	if got := ResolveModel(cfg, "music", "replicate"); got != "elevenlabs/music" {
@@ -291,6 +303,18 @@ func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
 	}
 	if got := ResolveModel(cfg, "sfx", "replicate"); got != "stability-ai/stable-audio-2.5" {
 		t.Errorf("backfilled sfx: %q", got)
+	}
+	if got := ResolveModel(cfg, "tts", "replicate"); got != "google/gemini-3.1-flash-tts" {
+		t.Errorf("backfilled tts: %q", got)
+	}
+	if got := ResolveModel(cfg, "tts-minimax", "replicate"); got != "minimax/speech-2.8-hd" {
+		t.Errorf("backfilled tts-minimax: %q", got)
+	}
+	if got := ResolveModel(cfg, "upscale-esrgan", "replicate"); got != "nightmareai/real-esrgan" {
+		t.Errorf("backfilled upscale-esrgan: %q", got)
+	}
+	if got := ResolveModel(cfg, "seedance-2.5", "replicate"); got != "bytedance/seedance-2.5" {
+		t.Errorf("backfilled seedance-2.5: %q", got)
 	}
 	// User entries win over the builtin table.
 	if got := ResolveModel(cfg, "gpt-image-2", "openai"); got != "custom-user-value" {
@@ -324,19 +348,35 @@ func TestDefaultTOMLParses(t *testing.T) {
 	if !strings.Contains(DefaultTOML, "xai = \"\"") {
 		t.Errorf("default TOML missing xai token field")
 	}
+	if !strings.Contains(DefaultTOML, "[models.seedance-2.5]") {
+		t.Errorf("default TOML missing seedance 2.5 model")
+	}
 	if !strings.Contains(DefaultTOML, "[models.seedance-2]") {
 		t.Errorf("default TOML missing seedance model")
 	}
 	if !strings.Contains(DefaultTOML, "[models.upscale]") {
 		t.Errorf("default TOML missing upscale model")
 	}
-	if cfg.Models["upscale"].ReplicateName != "nightmareai/real-esrgan" {
+	if !strings.Contains(DefaultTOML, "[models.upscale-esrgan]") {
+		t.Errorf("default TOML missing upscale-esrgan model")
+	}
+	if cfg.Models["upscale"].ReplicateName != "prunaai/p-image-upscale" {
 		t.Errorf("upscale model not parsed: %+v", cfg.Models["upscale"])
 	}
-	for _, section := range []string{"[models.music]", "[models.music-vocal]", "[models.sfx]"} {
+	if cfg.Models["upscale-esrgan"].ReplicateName != "nightmareai/real-esrgan" {
+		t.Errorf("upscale-esrgan model not parsed: %+v", cfg.Models["upscale-esrgan"])
+	}
+	for _, section := range []string{"[models.music]", "[models.music-vocal]", "[models.sfx]",
+		"[models.tts]", "[models.tts-minimax]"} {
 		if !strings.Contains(DefaultTOML, section) {
 			t.Errorf("default TOML missing %s", section)
 		}
+	}
+	if cfg.Models["tts"].ReplicateName != "google/gemini-3.1-flash-tts" {
+		t.Errorf("default tts model not parsed: %+v", cfg.Models["tts"])
+	}
+	if cfg.Models["tts-minimax"].ReplicateName != "minimax/speech-2.8-hd" {
+		t.Errorf("tts-minimax not parsed: %+v", cfg.Models["tts-minimax"])
 	}
 	if cfg.Models["music"].ReplicateName != "elevenlabs/music" {
 		t.Errorf("music model not parsed: %+v", cfg.Models["music"])

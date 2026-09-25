@@ -12,18 +12,21 @@ import (
 
 func TestIsTTSModel(t *testing.T) {
 	cases := map[string]bool{
-		"minimax/speech-2.8-hd":         true,
-		"minimax/speech-2.8-hd:abc123":  true,
-		"elevenlabs/v3":                 true,
-		"ElevenLabs/V3 ":                true,
-		"gpt-4o-mini-tts":               true,
-		"tts-1-hd":                      true,
-		"elevenlabs/music":              false,
-		"stability-ai/stable-audio-2.5": false,
-		"minimax/speech-2.8-hd-evil":    false,
-		"elevenlabs/v3-pro":             false,
-		"gpt-4o-mini":                   false,
-		"":                              false,
+		"minimax/speech-2.8-hd":           true,
+		"minimax/speech-2.8-hd:abc123":    true,
+		"google/gemini-3.1-flash-tts":     true,
+		"Google/Gemini-3.1-Flash-TTS ":    true,
+		"elevenlabs/v3":                   true,
+		"ElevenLabs/V3 ":                  true,
+		"gpt-4o-mini-tts":                 true,
+		"tts-1-hd":                        true,
+		"elevenlabs/music":                false,
+		"stability-ai/stable-audio-2.5":   false,
+		"minimax/speech-2.8-hd-evil":      false,
+		"elevenlabs/v3-pro":               false,
+		"google/gemini-3.1-flash-tts-old": false,
+		"gpt-4o-mini":                     false,
+		"":                                false,
 	}
 	for in, want := range cases {
 		if got := IsTTSModel(in); got != want {
@@ -35,7 +38,7 @@ func TestIsTTSModel(t *testing.T) {
 // TTS models are prompt-driven: they must not be exempted from the prompt
 // requirement.
 func TestTTSModelsAreNotPromptless(t *testing.T) {
-	for _, model := range []string{TTSSpeechModel, TTSElevenLabsModel, TTSOpenAIModel, TTS1HDModel} {
+	for _, model := range []string{TTSGeminiModel, TTSSpeechModel, TTSElevenLabsModel, TTSOpenAIModel, TTS1HDModel} {
 		if IsPromptlessModel(model) {
 			t.Errorf("IsPromptlessModel(%q) = true; TTS models need text", model)
 		}
@@ -63,6 +66,31 @@ func TestRequestValidateTTS(t *testing.T) {
 		mut        func(r *Request)
 		wantErrSub string
 	}{
+		{"gemini defaults", ProviderReplicate, TTSGeminiModel, func(r *Request) {}, ""},
+		{"gemini voice and instructions", ProviderReplicate, TTSGeminiModel, func(r *Request) {
+			r.Voice = "Puck"
+			r.Instructions = "warm and slow, British accent"
+		}, ""},
+		{"gemini bad voice", ProviderReplicate, TTSGeminiModel, func(r *Request) { r.Voice = "Rachel" }, "voice must be one of"},
+		{"gemini rejects speed", ProviderReplicate, TTSGeminiModel, func(r *Request) { r.Speed = 1.2 }, "-speed is not supported by -model tts"},
+		{"gemini rejects emotion", ProviderReplicate, TTSGeminiModel, func(r *Request) { r.Emotion = "calm" }, "-emotion is only supported by -model tts-minimax"},
+		{"gemini rejects pitch", ProviderReplicate, TTSGeminiModel, func(r *Request) { r.Pitch = 1 }, "-pitch is only supported by -model tts-minimax"},
+		{"gemini rejects stability", ProviderReplicate, TTSGeminiModel, func(r *Request) { r.Stability = float64Ptr(0.5) }, "-stability and -style are only supported"},
+		{"gemini needs replicate", ProviderOpenAI, TTSGeminiModel, func(r *Request) {}, "does not support model"},
+		{"gemini text byte cap", ProviderReplicate, TTSGeminiModel, func(r *Request) {
+			r.Prompt = strings.Repeat("a", MaxGeminiTTSBytes+1)
+		}, "at most 4000"},
+		{"gemini accepts exactly the byte cap", ProviderReplicate, TTSGeminiModel, func(r *Request) {
+			r.Prompt = strings.Repeat("a", MaxGeminiTTSBytes)
+		}, ""},
+		{"gemini instructions byte cap", ProviderReplicate, TTSGeminiModel, func(r *Request) {
+			r.Instructions = strings.Repeat("a", MaxGeminiTTSBytes+1)
+		}, "style prompt accepts at most 4000"},
+		{"gemini counts bytes not runes", ProviderReplicate, TTSGeminiModel, func(r *Request) {
+			// 3000 two-byte runes are 6000 bytes: over the cap even though
+			// the rune count is below it.
+			r.Prompt = strings.Repeat("é", 3000)
+		}, "at most 4000"},
 		{"speech defaults", ProviderReplicate, TTSSpeechModel, func(r *Request) {}, ""},
 		{"speech knobs", ProviderReplicate, TTSSpeechModel, func(r *Request) {
 			r.Voice = "English_Deep-VoicedGentleman"
@@ -74,7 +102,7 @@ func TestRequestValidateTTS(t *testing.T) {
 		{"speech needs replicate", ProviderOpenAI, TTSSpeechModel, func(r *Request) {}, "does not support model"},
 		{"speech fast", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.Speed = 2.5 }, "0.5-2"},
 		{"speech pitch out of range", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.Pitch = 13 }, "-12..12"},
-		{"speech rejects instructions", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.Instructions = "dry" }, "-instructions is only supported by -model tts-openai"},
+		{"speech rejects instructions", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.Instructions = "dry" }, "-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai"},
 		{"speech rejects stability", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.Stability = float64Ptr(0.5) }, "-stability and -style are only supported"},
 		{"speech rejects webp", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.OutputFormat = "webp" }, "mp3 or wav"},
 		{"speech rejects size", ProviderReplicate, TTSSpeechModel, func(r *Request) { r.Size = "1024x1024" }, "no pixel size"},
@@ -107,7 +135,7 @@ func TestRequestValidateTTS(t *testing.T) {
 		{"elevenlabs style range", ProviderReplicate, TTSElevenLabsModel, func(r *Request) { r.Style = float64Ptr(-0.5) }, "style must be 0-1"},
 		{"elevenlabs rejects emotion", ProviderReplicate, TTSElevenLabsModel, func(r *Request) { r.Emotion = "happy" }, "-emotion is only supported"},
 		{"elevenlabs rejects pitch", ProviderReplicate, TTSElevenLabsModel, func(r *Request) { r.Pitch = 2 }, "-pitch is only supported"},
-		{"elevenlabs rejects instructions", ProviderReplicate, TTSElevenLabsModel, func(r *Request) { r.Instructions = "dry" }, "-instructions is only supported"},
+		{"elevenlabs rejects instructions", ProviderReplicate, TTSElevenLabsModel, func(r *Request) { r.Instructions = "dry" }, "-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai"},
 
 		{"openai defaults", ProviderOpenAI, TTSOpenAIModel, func(r *Request) {}, ""},
 		{"openai instructions", ProviderOpenAI, TTSOpenAIModel, func(r *Request) {
@@ -117,8 +145,8 @@ func TestRequestValidateTTS(t *testing.T) {
 		}, ""},
 		{"openai bad voice", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Voice = "Bob" }, "voice must be one of"},
 		{"openai speed range", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Speed = 5 }, "0.25-4"},
-		{"openai rejects emotion", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Emotion = "calm" }, "-emotion is only supported"},
-		{"openai rejects pitch", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Pitch = 1 }, "-pitch is only supported"},
+		{"openai rejects emotion", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Emotion = "calm" }, "-emotion is only supported by -model tts-minimax"},
+		{"openai rejects pitch", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Pitch = 1 }, "-pitch is only supported by -model tts-minimax"},
 		{"openai rejects stability", ProviderOpenAI, TTSOpenAIModel, func(r *Request) { r.Style = float64Ptr(0.1) }, "-stability and -style are only supported"},
 		{"openai needs openai", ProviderReplicate, TTSOpenAIModel, func(r *Request) {}, "does not support model"},
 		{"openai text cap", ProviderOpenAI, TTSOpenAIModel, func(r *Request) {
@@ -145,7 +173,7 @@ func TestRequestValidateTTS(t *testing.T) {
 
 // TTS models need text like any prompt-driven model; there is no lyrics escape.
 func TestRequestValidateTTSNeedsText(t *testing.T) {
-	for _, model := range []string{TTSSpeechModel, TTSElevenLabsModel, TTSOpenAIModel} {
+	for _, model := range []string{TTSGeminiModel, TTSSpeechModel, TTSElevenLabsModel, TTSOpenAIModel} {
 		provider := ProviderReplicate
 		if IsOpenAITTSModel(model) {
 			provider = ProviderOpenAI
@@ -159,6 +187,7 @@ func TestRequestValidateTTSNeedsText(t *testing.T) {
 
 func TestTTSModelDefaults(t *testing.T) {
 	cases := map[string]string{
+		TTSGeminiModel:     DefaultTTSGeminiVoice,
 		TTSSpeechModel:     DefaultTTSVoice,
 		TTSElevenLabsModel: DefaultTTSElevenLabsVoice,
 		TTSOpenAIModel:     DefaultTTSOpenAIVoice,
@@ -233,6 +262,76 @@ func TestReplicateProviderSpeechHappyPath(t *testing.T) {
 	}
 }
 
+// Gemini 3.1 Flash TTS names its fields differently from the other speech
+// models: the text goes in `text`, the voice in `voice`, and -instructions
+// becomes the style prompt in `prompt`.
+func TestReplicateProviderGeminiTTSHappyPath(t *testing.T) {
+	asset := assetServer(t)
+	srv, bodies := audioServer(t, asset.URL+"/out.wav")
+
+	p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+	res, err := p.Generate(context.Background(), &Request{
+		Provider:     ProviderReplicate,
+		Token:        "rtok",
+		Model:        TTSGeminiModel,
+		Prompt:       "The results, I'm afraid, are conclusive.",
+		Voice:        "Kore",
+		Instructions: "warm and slow, British accent",
+		NumImages:    1,
+		OutputFormat: "wav",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Audios) != 1 || res.Audios[0].Format != "wav" {
+		t.Fatalf("audios: %#v", res.Audios)
+	}
+	got := (*bodies)[0]
+	if got["text"] != "The results, I'm afraid, are conclusive." {
+		t.Errorf("text: %#v", got["text"])
+	}
+	if got["voice"] != "Kore" {
+		t.Errorf("voice: %#v", got["voice"])
+	}
+	if got["prompt"] != "warm and slow, British accent" {
+		t.Errorf("instructions must become the style prompt: %#v", got["prompt"])
+	}
+	// The model has no speed, emotion, pitch, stability, or container field.
+	for _, forbidden := range []string{"speed", "emotion", "pitch", "stability", "style",
+		"voice_id", "audio_format", "output_format", "sample_rate", "bitrate"} {
+		if _, ok := got[forbidden]; ok {
+			t.Errorf("gemini TTS must not send %q: %#v", forbidden, got)
+		}
+	}
+}
+
+// With no -instructions the style prompt is omitted so the model's own
+// delivery default applies.
+func TestReplicateProviderGeminiTTSOmitsUnsetPrompt(t *testing.T) {
+	asset := assetServer(t)
+	srv, bodies := audioServer(t, asset.URL+"/out.wav")
+
+	p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+	if _, err := p.Generate(context.Background(), &Request{
+		Provider:     ProviderReplicate,
+		Token:        "rtok",
+		Model:        TTSGeminiModel,
+		Prompt:       "Just the text.",
+		Voice:        DefaultTTSGeminiVoice,
+		NumImages:    1,
+		OutputFormat: "mp3",
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	got := (*bodies)[0]
+	if _, ok := got["prompt"]; ok {
+		t.Errorf("unset style prompt must be omitted: %#v", got)
+	}
+	if got["voice"] != DefaultTTSGeminiVoice {
+		t.Errorf("voice: %#v", got["voice"])
+	}
+}
+
 // WAV output has no bitrate knob and must not carry one.
 func TestReplicateProviderSpeechWAVFormat(t *testing.T) {
 	asset := assetServer(t)
@@ -273,7 +372,7 @@ func TestReplicateProviderElevenLabsTTSHappyPath(t *testing.T) {
 		Provider:     ProviderReplicate,
 		Token:        "rtok",
 		Model:        TTSElevenLabsModel,
-		Prompt:       "[sarcastic] Oh, brilliant. Another Monday.",
+		Prompt:       "Oh, brilliant. Another Monday.",
 		Voice:        "Rachel",
 		Speed:        1.1,
 		Stability:    &stability,
@@ -288,7 +387,7 @@ func TestReplicateProviderElevenLabsTTSHappyPath(t *testing.T) {
 		t.Fatalf("audios: %#v", res.Audios)
 	}
 	got := (*bodies)[0]
-	if got["prompt"] != "[sarcastic] Oh, brilliant. Another Monday." {
+	if got["prompt"] != "Oh, brilliant. Another Monday." {
 		t.Errorf("prompt (the text) must pass through: %#v", got["prompt"])
 	}
 	if got["voice"] != "Rachel" {
@@ -477,6 +576,15 @@ func TestTTSVoiceEnums(t *testing.T) {
 	}
 	if len(ElevenLabsTTSVoices) != 26 {
 		t.Errorf("ElevenLabsTTSVoices has %d entries, want 26", len(ElevenLabsTTSVoices))
+	}
+	// The Gemini enum is the 30-voice list from the model's schema.
+	for _, v := range []string{"Kore", "Puck", "Zephyr", "Zubenelgenubi"} {
+		if !GeminiTTSVoices[v] {
+			t.Errorf("GeminiTTSVoices missing documented voice %q", v)
+		}
+	}
+	if len(GeminiTTSVoices) != 30 {
+		t.Errorf("GeminiTTSVoices has %d entries, want 30", len(GeminiTTSVoices))
 	}
 	for _, v := range []string{"alloy", "sage", "cedar", "marin"} {
 		if !OpenAITTSVoices[v] {

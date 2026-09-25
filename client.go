@@ -53,19 +53,28 @@ const (
 	GrokImagineVideoModel = "xai/grok-imagine-video-1.5"
 
 	// DefaultVideoModel is the Replicate-hosted video model used when output is
-	// MP4 and no model is supplied. Seedance 2.0 leads on reference handling,
-	// multi-scene continuity, and native audio.
-	DefaultVideoModel = SeedanceVideoModel
+	// MP4 and no model is supplied. Seedance 2.5 leads on reference handling
+	// (up to 30 images, 10 videos, 10 audios), multi-scene continuity, native
+	// audio, and durations up to 30 seconds. Seedance 2.0 is still selectable
+	// with -model seedance-2 and remains the only Seedance with 1080p.
+	DefaultVideoModel = Seedance25VideoModel
 
 	// MinimaxVideoModel is MiniMax H3 on Replicate: multimodal text-to-video,
 	// first/last-frame image-to-video, and reference images/videos/audio.
 	// Selectable via -model minimax-h3; not a default.
 	MinimaxVideoModel = "minimax/h3"
 
-	// SeedanceVideoModel is ByteDance Seedance 2.0 on Replicate and the default
-	// video model: text-to-video, first/last frame, reference images/videos/
-	// audio, and native synchronized audio in the same pass.
+	// SeedanceVideoModel is ByteDance Seedance 2.0 on Replicate: text-to-video,
+	// first/last frame, reference images/videos/audio, native synchronized
+	// audio, and 1080p. Selectable via -model seedance-2.
 	SeedanceVideoModel = "bytedance/seedance-2.0"
+
+	// Seedance25VideoModel is ByteDance Seedance 2.5 on Replicate and the
+	// default video model: text-to-video, first/last frame, up to 30 reference
+	// images / 10 reference videos / 10 reference audios, native synchronized
+	// audio, and durations up to 30s — but 480p/720p only. Selectable via
+	// -model seedance-2.5.
+	Seedance25VideoModel = "bytedance/seedance-2.5"
 
 	// KlingVideoModel is Kling Video 3.0 on Replicate: text-to-video and
 	// image-to-video with start/end frames, native audio with lip-synced
@@ -104,20 +113,26 @@ const (
 	// -duration is omitted, in seconds.
 	DefaultSFXDuration = 10
 
-	// TTSSpeechModel is MiniMax Speech 2.8 HD on Replicate and the default
-	// text-to-speech model: natural narration from text, with a voice id, an
-	// emotion, speed, pitch, and an mp3/wav container. Selectable via
-	// -model tts.
+	// TTSGeminiModel is Google's Gemini 3.1 Flash TTS on Replicate and the
+	// default text-to-speech model: 30 voices, 70+ languages, and a
+	// natural-language style prompt (curds' -instructions) steering tone,
+	// pace, and accent. It returns WAV, so an mp3 request is transcoded.
+	// Selectable via -model tts.
+	TTSGeminiModel = "google/gemini-3.1-flash-tts"
+
+	// TTSSpeechModel is MiniMax Speech 2.8 HD on Replicate: natural narration
+	// from text, with a free-form voice id, an emotion, speed, pitch, and an
+	// mp3/wav container. Selectable via -model tts-minimax.
 	TTSSpeechModel = "minimax/speech-2.8-hd"
 
 	// TTSElevenLabsModel is ElevenLabs v3 on Replicate: expressive
-	// text-to-speech, with inline audio tags ([whispers], [laughs]) in the
-	// text and per-voice stability/style. Selectable via -model tts-elevenlabs.
+	// text-to-speech with per-voice stability/style. Selectable via
+	// -model tts-elevenlabs.
 	TTSElevenLabsModel = "elevenlabs/v3"
 
 	// TTSOpenAIModel is OpenAI's gpt-4o-mini-tts speech model, served by the
-	// openai provider's POST /v1/audio/speech endpoint. It is the one speech
-	// model that accepts delivery instructions ("crisp British RP, dry").
+	// openai provider's POST /v1/audio/speech endpoint. Like Gemini 3.1 Flash
+	// TTS it accepts delivery instructions ("crisp British RP, dry").
 	// Selectable via -model tts-openai.
 	TTSOpenAIModel = "gpt-4o-mini-tts"
 
@@ -128,10 +143,12 @@ const (
 
 	// TTS defaults: the voice curds asks for when -voice is omitted, and the
 	// per-model text caps enforced before any network call.
-	DefaultTTSVoice           = "English_Wiselady"
+	DefaultTTSVoice           = "English_Wiselady" // minimax/speech-2.8-hd
+	DefaultTTSGeminiVoice     = "Kore"             // google/gemini-3.1-flash-tts
 	DefaultTTSElevenLabsVoice = "Rachel"
 	DefaultTTSOpenAIVoice     = "sage"
 	MaxTTSTextChars           = 10000 // minimax/speech-2.8-hd
+	MaxGeminiTTSBytes         = 4000  // google/gemini-3.1-flash-tts (text and prompt each)
 	MaxOpenAITTSChars         = 4096  // openai POST /v1/audio/speech
 
 	// FluxImageModel is FLUX.2 [pro] on Replicate: fast, cheap image generation
@@ -142,8 +159,8 @@ const (
 	// character consistency and multi-image compositing, 1K/2K/4K output.
 	NanoBananaImageModel = "google/nano-banana-2"
 
-	// TopazUpscaleModel is Topaz Labs' image upscaler on Replicate: a modern
-	// alternative to Real-ESRGAN with 2x/4x/6x factors and face enhancement.
+	// TopazUpscaleModel is Topaz Labs' image upscaler on Replicate: 2x/4x/6x
+	// factors plus face enhancement. Selectable via -model upscale-pro.
 	TopazUpscaleModel = "topazlabs/image-upscale"
 
 	// DefaultXaiVideoModel is xAI's native Grok Imagine Video model id, used
@@ -157,15 +174,27 @@ const (
 	DefaultSegmentationModel = "bria/remove-background"
 
 	// DefaultUpscaleModel is the Replicate-hosted super-resolution model used
-	// when -model upscale is requested. nightmareai/real-esrgan takes a single
-	// `image` URL plus a `scale` factor and optional `face_enhance`, returning
-	// one upscaled PNG. It generates no new pixels from a prompt, so it shares
+	// when -model upscale is requested. prunaai/p-image-upscale scales each
+	// side by a factor (or to a target megapixel count) and returns one image
+	// in png/jpg/webp. It generates no new pixels from a prompt, so it shares
 	// the segmentation request/validation path.
-	DefaultUpscaleModel = "nightmareai/real-esrgan"
+	DefaultUpscaleModel = "prunaai/p-image-upscale"
+
+	// RealESRGANUpscaleModel is nightmareai/real-esrgan (2021-era): a single
+	// `image` URL plus a `scale` factor and optional `face_enhance`, returning
+	// one upscaled PNG. The one upscaler with face enhancement. Selectable via
+	// -model upscale-esrgan.
+	RealESRGANUpscaleModel = "nightmareai/real-esrgan"
 
 	// DefaultUpscaleScale is the default super-resolution factor sent when the
-	// caller leaves Request.Scale at zero. Matches real-esrgan's own default.
+	// caller leaves Request.Scale at zero. Both upscalers accept 4.
 	DefaultUpscaleScale = 4
+
+	// MaxPrunaUpscaleFactor is prunaai/p-image-upscale's per-side factor cap.
+	MaxPrunaUpscaleFactor = 8
+
+	// MaxESRGANUpscaleFactor is nightmareai/real-esrgan's scale cap.
+	MaxESRGANUpscaleFactor = 10
 
 	MaxInputImages = 16
 
@@ -241,21 +270,25 @@ type Request struct {
 	// Only -model music-vocal accepts it.
 	Lyrics string
 	// Voice is the voice for a TTS model. minimax/speech-2.8-hd accepts any
-	// system voice id or a cloned id (free-form); elevenlabs/v3 and the OpenAI
-	// speech models take a name from their own enum. Empty = model default.
+	// system voice id or a cloned id (free-form); Gemini 3.1 Flash TTS,
+	// elevenlabs/v3 and the OpenAI speech models take a name from their own
+	// enum. Empty = model default.
 	Voice string
 	// Emotion is minimax/speech-2.8-hd's delivery emotion (auto, happy, sad,
 	// angry, fearful, disgusted, surprised, calm, fluent, neutral). Empty =
 	// auto. Rejected by the other TTS models.
 	Emotion string
 	// Speed is the TTS speaking rate. 0 = the model's own default; each model
-	// has its own range (0.5-2, 0.7-1.2, or 0.25-4).
+	// has its own range (0.5-2, 0.7-1.2, or 0.25-4). Gemini 3.1 Flash TTS has
+	// no speed knob, so it rejects the flag; steer pace via Instructions.
 	Speed float64
 	// Pitch shifts minimax/speech-2.8-hd's voice in semitones, -12..12.
 	// 0 = unshifted. Rejected by the other TTS models.
 	Pitch int
-	// Instructions steers delivery for OpenAI's gpt-4o-mini-tts only (accent,
-	// tone), e.g. "crisp British RP, dry". Rejected by every other TTS model.
+	// Instructions steers delivery: Gemini 3.1 Flash TTS's style prompt
+	// (tone, pace, accent, character) and OpenAI gpt-4o-mini-tts's
+	// instructions ("crisp British RP, dry"). Rejected by every other TTS
+	// model.
 	Instructions string
 	// Stability is elevenlabs/v3's voice stability, 0-1. nil = the model's own
 	// default (0.5). Rejected by the other TTS models.
@@ -494,8 +527,8 @@ func (r *Request) Validate() error {
 	if r.OutputCompression < 0 || r.OutputCompression > 100 {
 		return fmt.Errorf("output_compression must be 0-100, got %d", r.OutputCompression)
 	}
-	if len(r.InputImages) > MaxInputImages {
-		return fmt.Errorf("at most %d input images supported, got %d", MaxInputImages, len(r.InputImages))
+	if max := MaxInputImagesFor(r.Model); len(r.InputImages) > max {
+		return fmt.Errorf("at most %d input images supported, got %d", max, len(r.InputImages))
 	}
 	switch {
 	case IsVideoModel(r.Model):
@@ -677,6 +710,20 @@ func (r *Request) validateAudio() error {
 	return nil
 }
 
+// GeminiTTSVoices are the voice names google/gemini-3.1-flash-tts accepts.
+// curds validates -voice against this list so a typo fails locally instead of
+// upstream. The upstream default is Kore.
+var GeminiTTSVoices = map[string]bool{
+	"Achernar": true, "Achird": true, "Algenib": true, "Algieba": true,
+	"Alnilam": true, "Aoede": true, "Autonoe": true, "Callirrhoe": true,
+	"Charon": true, "Despina": true, "Enceladus": true, "Erinome": true,
+	"Fenrir": true, "Gacrux": true, "Iapetus": true, "Kore": true,
+	"Laomedeia": true, "Leda": true, "Orus": true, "Pulcherrima": true,
+	"Puck": true, "Rasalgethi": true, "Sadachbia": true, "Sadaltager": true,
+	"Schedar": true, "Sulafat": true, "Umbriel": true, "Vindemiatrix": true,
+	"Zephyr": true, "Zubenelgenubi": true,
+}
+
 // ElevenLabsTTSVoices are the voice names elevenlabs/v3 accepts. curds
 // validates -voice against this list so a typo fails locally instead of
 // upstream.
@@ -704,10 +751,12 @@ var MinimaxTTSEmotions = map[string]bool{
 }
 
 // DefaultVoiceFor returns the voice curds asks a TTS model for when -voice is
-// omitted: MiniMax's warm English system voice, ElevenLabs' Rachel, or
-// OpenAI's sage.
+// omitted: Gemini's Kore, MiniMax's warm English system voice, ElevenLabs'
+// Rachel, or OpenAI's sage.
 func DefaultVoiceFor(model string) string {
 	switch {
+	case IsTTSGeminiModel(model):
+		return DefaultTTSGeminiVoice
 	case IsTTSElevenLabsModel(model):
 		return DefaultTTSElevenLabsVoice
 	case IsOpenAITTSModel(model):
@@ -728,7 +777,7 @@ func SortedNames(voices map[string]bool) string {
 	return strings.Join(names, ", ")
 }
 
-// validateTTS checks a text-to-speech request. The three models share the
+// validateTTS checks a text-to-speech request. The four models share the
 // audio shape (one file, mp3/wav, no input media) but differ in provider,
 // voices, speed range, and which delivery knobs they take, so each is checked
 // against its own contract. Flags belonging to another TTS model are rejected
@@ -751,6 +800,31 @@ func (r *Request) validateTTS() error {
 		return errors.New("text-to-speech takes no input media; it reads -prompt (or stdin)")
 	}
 	switch {
+	case IsTTSGeminiModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		if r.Voice != "" && !GeminiTTSVoices[r.Voice] {
+			return fmt.Errorf("voice must be one of %s, got %q", SortedNames(GeminiTTSVoices), r.Voice)
+		}
+		if len(r.Prompt) > MaxGeminiTTSBytes {
+			return fmt.Errorf("text is %d bytes; Gemini 3.1 Flash TTS accepts at most %d", len(r.Prompt), MaxGeminiTTSBytes)
+		}
+		if len(r.Instructions) > MaxGeminiTTSBytes {
+			return fmt.Errorf("-instructions is %d bytes; Gemini 3.1 Flash TTS's style prompt accepts at most %d", len(r.Instructions), MaxGeminiTTSBytes)
+		}
+		if r.Speed != 0 {
+			return errors.New("-speed is not supported by -model tts (Gemini 3.1 Flash TTS); steer pace with -instructions")
+		}
+		if r.Emotion != "" {
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if r.Pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if r.Stability != nil || r.Style != nil {
+			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
+		}
 	case IsTTSSpeechModel(r.Model):
 		if r.Provider != ProviderReplicate {
 			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
@@ -771,7 +845,7 @@ func (r *Request) validateTTS() error {
 			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
 		}
 		if r.Instructions != "" {
-			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+			return errors.New("-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai (gpt-4o-mini-tts)")
 		}
 	case IsTTSElevenLabsModel(r.Model):
 		if r.Provider != ProviderReplicate {
@@ -790,13 +864,13 @@ func (r *Request) validateTTS() error {
 			return fmt.Errorf("style must be 0-1 for ElevenLabs v3, got %g", *r.Style)
 		}
 		if r.Emotion != "" {
-			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if r.Pitch != 0 {
-			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if r.Instructions != "" {
-			return errors.New("-instructions is only supported by -model tts-openai (gpt-4o-mini-tts)")
+			return errors.New("-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai (gpt-4o-mini-tts)")
 		}
 	case IsOpenAITTSModel(r.Model):
 		if r.Provider != ProviderOpenAI {
@@ -815,10 +889,10 @@ func (r *Request) validateTTS() error {
 			return fmt.Errorf("text is %d characters; OpenAI speech accepts at most %d", utf8.RuneCountInString(r.Prompt), MaxOpenAITTSChars)
 		}
 		if r.Emotion != "" {
-			return errors.New("-emotion is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if r.Pitch != 0 {
-			return errors.New("-pitch is only supported by -model tts (MiniMax Speech 2.8 HD)")
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
 		}
 		if r.Stability != nil || r.Style != nil {
 			return errors.New("-stability and -style are only supported by -model tts-elevenlabs")
@@ -1080,19 +1154,89 @@ func MinimaxVideoResolution(res string) string {
 	return ""
 }
 
+// SeedanceLimits describes the inputs a Seedance version accepts. 2.5 raised
+// every ceiling except resolution: it drops 1080p but takes far more
+// references and longer clips than 2.0.
+type SeedanceLimits struct {
+	MaxDuration int // seconds; -1 (intelligent) is always allowed in addition
+	MaxImages   int // reference images, including -input-image entries past the first
+	MaxVideos   int // reference videos
+	MaxAudios   int // reference audios
+}
+
+// SeedanceLimitsFor returns the input limits of the resolved Seedance model,
+// falling back to 2.0's narrower contract for anything unrecognised.
+func SeedanceLimitsFor(model string) SeedanceLimits {
+	if IsSeedance25Model(model) {
+		return SeedanceLimits{MaxDuration: 30, MaxImages: 30, MaxVideos: 10, MaxAudios: 10}
+	}
+	return SeedanceLimits{MaxDuration: 15, MaxImages: 9, MaxVideos: 3, MaxAudios: 3}
+}
+
+// SeedanceAllowedAspectRatios is Seedance 2.5's aspect_ratio enum. 2.0 also
+// accepts "9:21" (Seedance20AspectRatios).
+var SeedanceAllowedAspectRatios = map[string]bool{
+	"16:9": true, "4:3": true, "1:1": true, "3:4": true,
+	"9:16": true, "21:9": true, "adaptive": true,
+}
+
+// Seedance20AspectRatios is Seedance 2.0's aspect_ratio enum.
+var Seedance20AspectRatios = map[string]bool{
+	"16:9": true, "4:3": true, "1:1": true, "3:4": true,
+	"9:16": true, "21:9": true, "9:21": true, "adaptive": true,
+}
+
+// SeedanceAspectRatiosFor returns the ratio enum of the resolved Seedance
+// model.
+func SeedanceAspectRatiosFor(model string) map[string]bool {
+	if IsSeedance25Model(model) {
+		return SeedanceAllowedAspectRatios
+	}
+	return Seedance20AspectRatios
+}
+
+// MaxInputImagesFor returns the cap on -input-image entries for the resolved
+// model. Image models share the generic cap; the Seedance versions accept a
+// first frame on top of their own model-aware reference cap, and validate
+// that themselves.
+func MaxInputImagesFor(model string) int {
+	if IsSeedanceModel(model) {
+		return 1 + SeedanceLimitsFor(model).MaxImages
+	}
+	return MaxInputImages
+}
+
 func (r *Request) validateSeedanceVideo() error {
-	if r.VideoDuration != 0 && r.VideoDuration != -1 && (r.VideoDuration < 4 || r.VideoDuration > 15) {
-		return fmt.Errorf("video_duration must be -1 or 4-15 seconds, got %d", r.VideoDuration)
+	version := "2.0"
+	if IsSeedance25Model(r.Model) {
+		version = "2.5"
 	}
+	limits := SeedanceLimitsFor(r.Model)
+	if r.VideoDuration != 0 && r.VideoDuration != -1 && (r.VideoDuration < 4 || r.VideoDuration > limits.MaxDuration) {
+		return fmt.Errorf("video_duration must be -1 or 4-%d seconds for Seedance %s, got %d", limits.MaxDuration, version, r.VideoDuration)
+	}
+	// Seedance 2.5 dropped 1080p; 2.0 still offers it, so name the way out
+	// instead of only rejecting the value.
 	switch r.VideoResolution {
-	case "480p", "720p", "1080p":
+	case "480p", "720p":
+	case "1080p":
+		if version == "2.5" {
+			return errors.New("Seedance 2.5 has no 1080p output; choose -video-resolution 720p, or -model seedance-2 / -model kling-v3 for 1080p")
+		}
+	case "4k":
+		if version == "2.5" {
+			return errors.New("Seedance 2.5 has no 4k output; choose -video-resolution 720p, or -model kling-v3 for 4k")
+		}
+		return fmt.Errorf("video_resolution must be 480p, 720p, or 1080p for Seedance 2.0, got %q", r.VideoResolution)
 	default:
-		return fmt.Errorf("video_resolution must be 480p, 720p, or 1080p, got %q", r.VideoResolution)
+		if version == "2.5" {
+			return fmt.Errorf("video_resolution must be 480p or 720p for Seedance 2.5, got %q", r.VideoResolution)
+		}
+		return fmt.Errorf("video_resolution must be 480p, 720p, or 1080p for Seedance 2.0, got %q", r.VideoResolution)
 	}
-	switch r.AspectRatio {
-	case "16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21", "adaptive":
-	default:
-		return fmt.Errorf("seedance aspect_ratio must be 16:9, 4:3, 1:1, 3:4, 9:16, 21:9, 9:21, or adaptive; got %q", r.AspectRatio)
+	ratios := SeedanceAspectRatiosFor(r.Model)
+	if !ratios[r.AspectRatio] {
+		return fmt.Errorf("seedance aspect_ratio must be one of %s, got %q", SortedNames(ratios), r.AspectRatio)
 	}
 	if r.LastFrameImage != "" && len(r.InputImages) == 0 {
 		return errors.New("-last-frame-image requires one -input-image first frame")
@@ -1107,14 +1251,14 @@ func (r *Request) validateSeedanceVideo() error {
 	if len(r.InputImages) > 1 {
 		referenceImageCount += len(r.InputImages)
 	}
-	if referenceImageCount > 9 {
-		return fmt.Errorf("Seedance supports at most 9 reference images, got %d", referenceImageCount)
+	if referenceImageCount > limits.MaxImages {
+		return fmt.Errorf("Seedance %s supports at most %d reference images, got %d", version, limits.MaxImages, referenceImageCount)
 	}
-	if len(r.ReferenceVideos) > 3 {
-		return fmt.Errorf("Seedance supports at most 3 reference videos, got %d", len(r.ReferenceVideos))
+	if len(r.ReferenceVideos) > limits.MaxVideos {
+		return fmt.Errorf("Seedance %s supports at most %d reference videos, got %d", version, limits.MaxVideos, len(r.ReferenceVideos))
 	}
-	if len(r.ReferenceAudios) > 3 {
-		return fmt.Errorf("Seedance supports at most 3 reference audios, got %d", len(r.ReferenceAudios))
+	if len(r.ReferenceAudios) > limits.MaxAudios {
+		return fmt.Errorf("Seedance %s supports at most %d reference audios, got %d", version, limits.MaxAudios, len(r.ReferenceAudios))
 	}
 	if len(r.ReferenceAudios) > 0 && len(r.ReferenceImages) == 0 && len(r.ReferenceVideos) == 0 && len(r.InputImages) == 0 {
 		return errors.New("Seedance reference audios require at least one image or video reference")
@@ -1274,10 +1418,21 @@ func (r *Request) validateUpscale() error {
 	if r.NumImages != 1 {
 		return fmt.Errorf("upscale produces exactly one image, got num_images=%d", r.NumImages)
 	}
-	if r.OutputFormat != "" && r.OutputFormat != "png" {
-		return fmt.Errorf("upscale output_format must be png, got %q", r.OutputFormat)
-	}
-	if IsTopazUpscaleModel(r.Model) {
+	switch {
+	case IsPrunaUpscaleModel(r.Model):
+		if r.OutputFormat != "" && !PrunaUpscaleFormats[r.OutputFormat] {
+			return fmt.Errorf("upscale output_format must be png, jpeg, or webp for prunaai/p-image-upscale, got %q", r.OutputFormat)
+		}
+		if r.FaceEnhance {
+			return errors.New("-face-enhance is not supported by prunaai/p-image-upscale; use -model upscale-pro (topazlabs/image-upscale) or -model upscale-esrgan (nightmareai/real-esrgan)")
+		}
+		if r.Scale != 0 && (r.Scale < 1 || r.Scale > MaxPrunaUpscaleFactor) {
+			return fmt.Errorf("upscale scale must be between 1 and %d for prunaai/p-image-upscale, got %g", MaxPrunaUpscaleFactor, r.Scale)
+		}
+	case IsTopazUpscaleModel(r.Model):
+		if r.OutputFormat != "" && r.OutputFormat != "png" {
+			return fmt.Errorf("upscale output_format must be png, got %q", r.OutputFormat)
+		}
 		if TopazUpscaleFactor(r.Scale) == "" {
 			return fmt.Errorf("topaz upscale scale must be 2, 4, or 6, got %g", r.Scale)
 		}
@@ -1285,8 +1440,15 @@ func (r *Request) validateUpscale() error {
 			// Topaz applies face enhancement during the upscale pass.
 			return errors.New("topaz -face-enhance requires -scale 2, 4, or 6")
 		}
-	} else if r.Scale != 0 && (r.Scale < 1 || r.Scale > 10) {
-		return fmt.Errorf("upscale scale must be between 1 and 10, got %g", r.Scale)
+	default:
+		// nightmareai/real-esrgan: one PNG output, a numeric scale, and
+		// optional GFPGAN face enhancement.
+		if r.OutputFormat != "" && r.OutputFormat != "png" {
+			return fmt.Errorf("upscale output_format must be png, got %q", r.OutputFormat)
+		}
+		if r.Scale != 0 && (r.Scale < 1 || r.Scale > MaxESRGANUpscaleFactor) {
+			return fmt.Errorf("upscale scale must be between 1 and %d, got %g", MaxESRGANUpscaleFactor, r.Scale)
+		}
 	}
 	if r.Mask != "" {
 		return errors.New("upscale does not accept -mask")
@@ -1296,6 +1458,10 @@ func (r *Request) validateUpscale() error {
 	}
 	return nil
 }
+
+// PrunaUpscaleFormats are the containers prunaai/p-image-upscale can emit, and
+// the values -output-format accepts for it. curds' "jpeg" maps to its "jpg".
+var PrunaUpscaleFormats = map[string]bool{"webp": true, "jpeg": true, "png": true}
 
 // TopazUpscaleFactor maps a curds -scale value onto Topaz's upscale_factor
 // enum, returning "" when the value is not one Topaz accepts. Zero means "no
@@ -1340,16 +1506,24 @@ func IsXaiVideoModel(model string) bool {
 	return strings.TrimSpace(strings.ToLower(model)) == DefaultXaiVideoModel
 }
 
-// IsSeedanceModel reports whether the resolved provider model is ByteDance's
-// Seedance video model.
+// IsSeedanceModel reports whether the resolved provider model is any ByteDance
+// Seedance video model (2.0 or 2.5). Version-specific behaviour goes through
+// IsSeedance25Model / SeedanceLimitsFor.
 func IsSeedanceModel(model string) bool {
-	model = strings.TrimSpace(strings.ToLower(model))
-	switch model {
-	case "bytedance/seedance-2.0", "bytedance/seedance-2.0-fast":
-		return true
-	}
-	return strings.HasPrefix(model, "bytedance/seedance-2.0:") ||
-		strings.HasPrefix(model, "bytedance/seedance-2.0-fast:")
+	return IsSeedance25Model(model) || IsSeedance20Model(model)
+}
+
+// IsSeedance25Model reports whether the resolved provider model is Seedance
+// 2.5, the default video model (480p/720p, up to 30 reference images).
+func IsSeedance25Model(model string) bool {
+	return matchesReplicateModel(model, Seedance25VideoModel)
+}
+
+// IsSeedance20Model reports whether the resolved provider model is Seedance
+// 2.0 (or its fast variant) — the version that still offers 1080p.
+func IsSeedance20Model(model string) bool {
+	return matchesReplicateModel(model, SeedanceVideoModel) ||
+		matchesReplicateModel(model, SeedanceVideoModel+"-fast")
 }
 
 // IsGrokImagineVideoModel reports whether the resolved provider model is xAI's
@@ -1394,9 +1568,22 @@ func IsNanoBananaImageModel(model string) bool {
 }
 
 // IsTopazUpscaleModel reports whether the resolved provider model is Topaz
-// Labs' image upscaler.
+// Labs' image upscaler (-model upscale-pro).
 func IsTopazUpscaleModel(model string) bool {
 	return matchesReplicateModel(model, TopazUpscaleModel)
+}
+
+// IsPrunaUpscaleModel reports whether the resolved provider model is
+// prunaai/p-image-upscale, the default upscaler (-model upscale).
+func IsPrunaUpscaleModel(model string) bool {
+	return matchesReplicateModel(model, DefaultUpscaleModel)
+}
+
+// IsRealESRGANUpscaleModel reports whether the resolved provider model is
+// nightmareai/real-esrgan (-model upscale-esrgan), the one upscaler with face
+// enhancement.
+func IsRealESRGANUpscaleModel(model string) bool {
+	return matchesReplicateModel(model, RealESRGANUpscaleModel)
 }
 
 // IsMusicModel reports whether the resolved provider model is ElevenLabs Music
@@ -1420,10 +1607,17 @@ func IsSFXModel(model string) bool {
 }
 
 // IsTTSSpeechModel reports whether the resolved provider model is MiniMax
-// Speech 2.8 HD (minimax/speech-2.8-hd): the default text-to-speech model,
-// with a free-form voice id, emotion, speed, and pitch.
+// Speech 2.8 HD (minimax/speech-2.8-hd): narration with a free-form voice id,
+// emotion, speed, and pitch (-model tts-minimax).
 func IsTTSSpeechModel(model string) bool {
 	return matchesReplicateModel(model, TTSSpeechModel)
+}
+
+// IsTTSGeminiModel reports whether the resolved provider model is Google's
+// Gemini 3.1 Flash TTS (google/gemini-3.1-flash-tts), the default TTS model:
+// an enum voice plus a natural-language style prompt (-model tts).
+func IsTTSGeminiModel(model string) bool {
+	return matchesReplicateModel(model, TTSGeminiModel)
 }
 
 // IsTTSElevenLabsModel reports whether the resolved provider model is
@@ -1434,7 +1628,7 @@ func IsTTSElevenLabsModel(model string) bool {
 }
 
 // IsOpenAITTSMiniModel reports whether the resolved provider model is OpenAI's
-// gpt-4o-mini-tts, the one speech model that accepts -instructions.
+// gpt-4o-mini-tts, the OpenAI speech model that accepts -instructions.
 func IsOpenAITTSMiniModel(model string) bool {
 	return matchesReplicateModel(model, TTSOpenAIModel)
 }
@@ -1447,9 +1641,11 @@ func IsOpenAITTSModel(model string) bool {
 }
 
 // IsTTSModel reports whether the resolved provider model is a text-to-speech
-// model: MiniMax Speech 2.8 HD, ElevenLabs v3, or an OpenAI speech model.
+// model: Gemini 3.1 Flash TTS, MiniMax Speech 2.8 HD, ElevenLabs v3, or an
+// OpenAI speech model.
 func IsTTSModel(model string) bool {
-	return IsTTSSpeechModel(model) || IsTTSElevenLabsModel(model) || IsOpenAITTSModel(model)
+	return IsTTSGeminiModel(model) || IsTTSSpeechModel(model) ||
+		IsTTSElevenLabsModel(model) || IsOpenAITTSModel(model)
 }
 
 // IsAudioModel reports whether the resolved provider model produces audio
@@ -1488,7 +1684,7 @@ func IsSegmentationModel(model string) bool {
 // new pixels from a prompt, so they share the no-prompt validation and
 // request-building path.
 func IsUpscaleModel(model string) bool {
-	return matchesReplicateModel(model, DefaultUpscaleModel) || IsTopazUpscaleModel(model)
+	return IsPrunaUpscaleModel(model) || IsRealESRGANUpscaleModel(model) || IsTopazUpscaleModel(model)
 }
 
 // IsPromptlessModel reports whether the model runs without a text prompt: it is

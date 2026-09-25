@@ -8,15 +8,17 @@ project-local context. Keep it short and load-bearing.
 A Go CLI + library for generating images via OpenAI's gpt-image-2.5 (direct;
 Flare default, Sunburst via `-model gpt-image-2.5-sunburst`),
 plus images/videos via Replicate-hosted models (FLUX.2 [pro], Nano Banana 2,
-Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), music and sound
+Seedance 2.5, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), music and sound
 effects via `elevenlabs/music` (-model music), `minimax/music-2.6`
 (-model music-vocal, alias minimax-music) and `stability-ai/stable-audio-2.5`
-(-model sfx), text to speech via `minimax/speech-2.8-hd` (-model tts),
-`elevenlabs/v3` (-model tts-elevenlabs) and OpenAI's `gpt-4o-mini-tts`
-(-model tts-openai; `tts-1-hd` also selectable), talking heads and
+(-model sfx), text to speech via `google/gemini-3.1-flash-tts` (-model tts),
+`minimax/speech-2.8-hd` (-model tts-minimax), `elevenlabs/v3`
+(-model tts-elevenlabs) and OpenAI's `gpt-4o-mini-tts` (-model tts-openai;
+`tts-1-hd` also selectable), talking heads and
 lip-sync via `kwaivgi/kling-avatar-v2` and `sync/lipsync-2-pro`, plus background
 removal via `bria/remove-background` (segmentation), plus image upscaling via
-`nightmareai/real-esrgan` and `topazlabs/image-upscale` (super-resolution).
+`prunaai/p-image-upscale` (-model upscale), `nightmareai/real-esrgan`
+(-model upscale-esrgan) and `topazlabs/image-upscale` (-model upscale-pro).
 `curds run OWNER/MODEL key=value …` is a raw Replicate passthrough (`run.go` in
 the library, `cmd/curds/run.go` in the CLI); it shares `ReplicateProvider`'s
 prediction lifecycle (`runPrediction`) but does no field mapping.
@@ -75,12 +77,20 @@ file; if you add a provider, model, or flag that changes the happy path, update
   rules. User-supplied `-size WxH` is rounded by `RoundSize`. If you expand
   the ratio map, the new entries must satisfy: both edges multiples of 16,
   edges ≤ 3840, ratio ≤ 3:1, total pixels in [655 360, 8 294 400].
-- **Video models.** `seedance-2` (`bytedance/seedance-2.0`) is the default
+- **Video models.** `seedance-2.5` (`bytedance/seedance-2.5`) is the default
   video model when output is MP4 and no `-model` is supplied; the CLI falls
   back to native xAI `grok-imagine-video` only when no replicate token is
-  available. `kling-v3` (`kwaivgi/kling-v3-video`), `minimax-h3`
-  (`minimax/h3`) and `grok-imagine-video-1.5` are selectable. All emit
-  `Result.Videos` and save MP4 output.
+  available. `seedance-2` (`bytedance/seedance-2.0`) stays selectable and is
+  the only Seedance with 1080p. `kling-v3` (`kwaivgi/kling-v3-video`),
+  `minimax-h3` (`minimax/h3`) and `grok-imagine-video-1.5` are selectable. All
+  emit `Result.Videos` and save MP4 output.
+  The two Seedance versions differ, so validation is model-aware:
+  `SeedanceLimitsFor` / `SeedanceAspectRatiosFor` return 2.5's wider
+  ceilings (30 reference images, 10 videos, 10 audios, 4-30s, 480p/720p, no
+  `9:21`) or 2.0's (9/3/3, 4-15s, 480p/720p/1080p, `9:21`). 1080p on 2.5 is a
+  usage error (exit 2) naming `-model seedance-2` / `-model kling-v3`; the
+  library rejects it too. `MaxInputImagesFor` raises the generic
+  `-input-image` cap for Seedance (first frame + model-aware references).
   Kling maps `-video-resolution` onto its `mode` enum via `KlingMode`
   (720p=standard, 1080p=pro, 4k) and names frames `start_image`/`end_image`.
   MiniMax H3 has its own field names (`first_frame_image`, `last_frame_image`,
@@ -96,7 +106,8 @@ file; if you add a provider, model, or flag that changes the happy path, update
   `Request.Audio`/`InputVideo`/`SyncMode`/`SyncTemperature` carry their flags;
   `-strip-audio` defaults off for both models and `maybeCropCaptions` handles
   `-crop-captions`. Seedance failures mentioning E005/"flagged as sensitive"
-  retry once on Kling 3.0 (`fallbackOnSeedanceFaceRejection`, `-no-fallback`).
+  retry once on Kling 3.0 (`fallbackOnSeedanceFaceRejection`, `-no-fallback`),
+  for both Seedance versions.
   For Grok Imagine Video, exactly one `InputImages` entry is sent as `image`.
   For Seedance, one `InputImages` entry is sent as `image` (first frame);
   multiple `InputImages` entries are sent as `reference_images`.
@@ -110,24 +121,45 @@ file; if you add a provider, model, or flag that changes the happy path, update
   `replicateImageFormat`, take one image per prediction, and ignore
   quality/background/moderation. `Request.ImageResolution` carries
   `-image-resolution` for both.
-- **Text-to-speech models.** `tts` (`minimax/speech-2.8-hd`, the
-  default TTS model), `tts-elevenlabs` (`elevenlabs/v3`) and `tts-openai` /
+- **Upscale models.** `IsUpscaleModel` covers three different contracts.
+  `upscale` (`prunaai/p-image-upscale`, the 2026 default) sends
+  `upscale_mode=factor` with `factor` from `-scale` (1-8, default 4) and
+  `output_format` png/jpg/webp (curds' `jpeg` → `jpg`); it has no
+  face-enhancement knob, so `-face-enhance` is a usage error (exit 2) and the
+  error names `upscale-pro` / `upscale-esrgan`. `upscale-esrgan`
+  (`nightmareai/real-esrgan`, 2021-era) keeps the numeric `scale` (1-10) plus
+  GFPGAN `face_enhance`, and returns PNG. `upscale-pro`
+  (`topazlabs/image-upscale`) maps `-scale` onto the `upscale_factor` enum via
+  `TopazUpscaleFactor`. `buildReplicateUpscaleInput` branches on the same
+  predicates; `PrunaUpscaleFormats` is what `validateUpscale` checks. Changing
+  which model `-model upscale` means requires updating `DefaultUpscaleModel`,
+  `config.builtinModels`, `DefaultTOML`, and the README/help at once.
+- **Text-to-speech models.** `tts` (`google/gemini-3.1-flash-tts`, the
+  default TTS model), `tts-minimax` (`minimax/speech-2.8-hd`),
+  `tts-elevenlabs` (`elevenlabs/v3`) and `tts-openai` /
   `tts-1-hd` (OpenAI `gpt-4o-mini-tts` / `tts-1-hd`, via the openai provider's
   `POST /v1/audio/speech`, returning raw bytes). They are audio models: they
   emit `Result.Audios`, save mp3/wav (`saveAudios`/`writeAudioAsset`), and are
   covered by `IsAudioModel`. `IsTTSModel` plus
-  `IsTTSSpeechModel`/`IsTTSElevenLabsModel`/`IsOpenAITTSModel`/
-  `IsOpenAITTSMiniModel` gate the per-model validation (`validateTTS` in
-  client.go, `validateTTSFlags` in the CLI) and builders
-  (`buildReplicateSpeechInput`, `buildReplicateElevenLabsTTSInput`,
-  `OpenAIProvider.callSpeech`). Replicate TTS needs a replicate token, OpenAI
-  TTS an openai token; a config model bound to one provider forces it, and
-  incompatible `-provider`/`-model` pairs are rejected locally. Flags: `-voice`
-  (free-form for minimax, enum for the other two), `-emotion`/`-pitch`
-  (minimax), `-stability`/`-style` (elevenlabs), `-instructions` (tts-openai /
-  gpt-4o-mini-tts only), `-speed` (all three, per-model range). `Request.
-  Stability`/`Style` are `*float64` (nil = model default) because 0 is a valid
-  value. Min/max text lengths are checked locally (10000 / 4096 chars).
+  `IsTTSGeminiModel`/`IsTTSSpeechModel`/`IsTTSElevenLabsModel`/
+  `IsOpenAITTSModel`/`IsOpenAITTSMiniModel` gate the per-model validation
+  (`validateTTS` in client.go, `validateTTSFlags` in the CLI) and builders
+  (`buildReplicateGeminiTTSInput`, `buildReplicateSpeechInput`,
+  `buildReplicateElevenLabsTTSInput`, `OpenAIProvider.callSpeech`). Replicate
+  TTS needs a replicate token, OpenAI TTS an openai token; a config model
+  bound to one provider forces it, and incompatible `-provider`/`-model` pairs
+  are rejected locally. Flags: `-voice` (free-form for tts-minimax, enum for
+  the other three), `-emotion`/`-pitch` (tts-minimax),
+  `-stability`/`-style` (tts-elevenlabs), `-instructions` (tts → Gemini's
+  `prompt` style field, and tts-openai; rejected elsewhere), `-speed`
+  (tts-minimax 0.5-2, tts-elevenlabs 0.7-1.2, tts-openai 0.25-4 — Gemini has
+  no speed knob). `Request.Stability`/`Style` are `*float64` (nil = model
+  default) because 0 is a valid value. Min/max text lengths are checked
+  locally (10000 chars / 4096 chars / 4000 bytes for Gemini text and prompt).
+  Gemini returns WAV and ElevenLabs mp3, so a mismatched container is
+  transcoded after download rather than requested upstream. elevenlabs/v3 on
+  Replicate does NOT parse inline markers: bracketed text is spoken aloud, and
+  no docs may claim otherwise.
 - **Audio models.** `music` (`elevenlabs/music`), `music-vocal`
   (`minimax/music-2.6`, alias `minimax-music`) and `sfx`
   (`stability-ai/stable-audio-2.5`) are Replicate-only, prompt-driven (except

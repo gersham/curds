@@ -103,22 +103,41 @@ func TestValidateTTSFlags(t *testing.T) {
 		mut        func(o *cliOptions)
 		wantErrSub string
 	}{
-		{"tts defaults", curds.TTSSpeechModel, func(o *cliOptions) {}, ""},
-		{"tts emotion speed pitch", curds.TTSSpeechModel, func(o *cliOptions) {
+		{"tts defaults", curds.TTSGeminiModel, func(o *cliOptions) {}, ""},
+		{"tts voice and instructions", curds.TTSGeminiModel, func(o *cliOptions) {
+			o.voice = "Puck"
+			o.instructions = "warm and slow, British accent"
+		}, ""},
+		{"tts rejects a foreign voice", curds.TTSGeminiModel, func(o *cliOptions) { o.voice = "Rachel" }, "is not a valid -model tts voice"},
+		{"tts rejects speed", curds.TTSGeminiModel, func(o *cliOptions) { o.speed = 1.2 }, "-speed is not supported by -model tts"},
+		{"tts rejects emotion", curds.TTSGeminiModel, func(o *cliOptions) { o.emotion = "calm" }, "-emotion is only supported by -model tts-minimax"},
+		{"tts rejects pitch", curds.TTSGeminiModel, func(o *cliOptions) { o.pitch = -3 }, "-pitch is only supported by -model tts-minimax"},
+		{"tts rejects stability", curds.TTSGeminiModel, func(o *cliOptions) { o.stability = 0.5 }, "-stability and -style are only supported"},
+		{"tts text byte cap", curds.TTSGeminiModel, func(o *cliOptions) {
+			o.prompt = strings.Repeat("a", curds.MaxGeminiTTSBytes+1)
+		}, "at most 4000"},
+		{"tts instructions byte cap", curds.TTSGeminiModel, func(o *cliOptions) {
+			o.instructions = strings.Repeat("a", curds.MaxGeminiTTSBytes+1)
+		}, "at most 4000"},
+		{"tts rejects duration", curds.TTSGeminiModel, func(o *cliOptions) { o.duration = 10 }, "-duration is only supported"},
+		{"tts rejects lyrics", curds.TTSGeminiModel, func(o *cliOptions) { o.lyrics = "la la" }, "-lyrics is only supported"},
+
+		{"tts-minimax defaults", curds.TTSSpeechModel, func(o *cliOptions) {}, ""},
+		{"tts-minimax emotion speed pitch", curds.TTSSpeechModel, func(o *cliOptions) {
 			o.emotion = "calm"
 			o.pitch = -3
 			o.speed = 1.5
 		}, ""},
-		{"tts voice is free-form", curds.TTSSpeechModel, func(o *cliOptions) { o.voice = "MyClonedVoice" }, ""},
-		{"tts bad emotion", curds.TTSSpeechModel, func(o *cliOptions) { o.emotion = "sleepy" }, "-emotion must be one of"},
-		{"tts bad speed", curds.TTSSpeechModel, func(o *cliOptions) { o.speed = 0.4 }, "-speed must be 0.5-2"},
-		{"tts bad pitch", curds.TTSSpeechModel, func(o *cliOptions) { o.pitch = 13 }, "-pitch must be -12..12"},
-		{"tts rejects instructions", curds.TTSSpeechModel, func(o *cliOptions) { o.instructions = "dry" }, "-instructions is only supported by -model tts-openai"},
-		{"tts text cap", curds.TTSSpeechModel, func(o *cliOptions) {
+		{"tts-minimax voice is free-form", curds.TTSSpeechModel, func(o *cliOptions) { o.voice = "MyClonedVoice" }, ""},
+		{"tts-minimax bad emotion", curds.TTSSpeechModel, func(o *cliOptions) { o.emotion = "sleepy" }, "-emotion must be one of"},
+		{"tts-minimax bad speed", curds.TTSSpeechModel, func(o *cliOptions) { o.speed = 0.4 }, "-speed must be 0.5-2"},
+		{"tts-minimax bad pitch", curds.TTSSpeechModel, func(o *cliOptions) { o.pitch = 13 }, "-pitch must be -12..12"},
+		{"tts-minimax rejects instructions", curds.TTSSpeechModel, func(o *cliOptions) { o.instructions = "dry" }, "-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai"},
+		{"tts-minimax text cap", curds.TTSSpeechModel, func(o *cliOptions) {
 			o.prompt = strings.Repeat("a", curds.MaxTTSTextChars+1)
 		}, "at most 10000"},
-		{"tts rejects duration", curds.TTSSpeechModel, func(o *cliOptions) { o.duration = 10 }, "-duration is only supported"},
-		{"tts rejects lyrics", curds.TTSSpeechModel, func(o *cliOptions) { o.lyrics = "la la" }, "-lyrics is only supported"},
+		{"tts-minimax rejects duration", curds.TTSSpeechModel, func(o *cliOptions) { o.duration = 10 }, "-duration is only supported"},
+		{"tts-minimax rejects lyrics", curds.TTSSpeechModel, func(o *cliOptions) { o.lyrics = "la la" }, "-lyrics is only supported"},
 
 		{"elevenlabs defaults", curds.TTSElevenLabsModel, func(o *cliOptions) {}, ""},
 		{"elevenlabs named voice", curds.TTSElevenLabsModel, func(o *cliOptions) { o.voice = "Rachel" }, ""},
@@ -165,14 +184,17 @@ func TestTTSFlagsExitTwo(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"instructions on minimax", []string{"-no-tui", "-model", "tts", "-instructions", "x", "-prompt", "hi"}, "-instructions is only supported by -model tts-openai"},
+		{"instructions on tts-minimax", []string{"-no-tui", "-model", "tts-minimax", "-instructions", "x", "-prompt", "hi"}, "-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai"},
 		{"bad elevenlabs voice", []string{"-no-tui", "-model", "tts-elevenlabs", "-voice", "Bob", "-prompt", "hi"}, "is not a valid -model tts-elevenlabs voice"},
-		{"stability on minimax", []string{"-no-tui", "-model", "tts", "-stability", "0.5", "-prompt", "hi"}, "-stability and -style are only supported"},
-		{"style on minimax", []string{"-no-tui", "-model", "tts", "-style", "0", "-prompt", "hi"}, "-stability and -style are only supported"},
-		{"emotion on openai", []string{"-no-tui", "-model", "tts-openai", "-emotion", "calm", "-prompt", "hi"}, "-emotion is only supported by -model tts"},
+		{"bad gemini voice", []string{"-no-tui", "-model", "tts", "-voice", "Rachel", "-prompt", "hi"}, "is not a valid -model tts voice"},
+		{"speed on gemini", []string{"-no-tui", "-model", "tts", "-speed", "1.2", "-prompt", "hi"}, "-speed is not supported by -model tts"},
+		{"emotion on gemini", []string{"-no-tui", "-model", "tts", "-emotion", "calm", "-prompt", "hi"}, "-emotion is only supported by -model tts-minimax"},
+		{"stability on minimax", []string{"-no-tui", "-model", "tts-minimax", "-stability", "0.5", "-prompt", "hi"}, "-stability and -style are only supported"},
+		{"style on minimax", []string{"-no-tui", "-model", "tts-minimax", "-style", "0", "-prompt", "hi"}, "-stability and -style are only supported"},
+		{"emotion on openai", []string{"-no-tui", "-model", "tts-openai", "-emotion", "calm", "-prompt", "hi"}, "-emotion is only supported by -model tts-minimax"},
 		{"voice on an image model", []string{"-no-tui", "-model", "gpt-image-2.5", "-voice", "sage", "-prompt", "hi"}, "need a text-to-speech model"},
 		{"missing text", []string{"-no-tui", "-model", "tts"}, "prompt is required"},
-		{"emotion outside the enum", []string{"-no-tui", "-model", "tts", "-emotion", "sleepy", "-prompt", "hi"}, "-emotion must be one of"},
+		{"emotion outside the enum", []string{"-no-tui", "-model", "tts-minimax", "-emotion", "sleepy", "-prompt", "hi"}, "-emotion must be one of"},
 		{"instructions on tts-1-hd", []string{"-no-tui", "-model", "tts-1-hd", "-instructions", "dry", "-prompt", "hi"}, "only supported by gpt-4o-mini-tts"},
 	}
 	for _, tc := range cases {
@@ -200,7 +222,7 @@ func TestTTSProviderRouting(t *testing.T) {
 		return &curds.Client{Replicate: rep, OpenAI: openai}, repInputs, bodies, auths
 	}
 
-	t.Run("tts routes to replicate via the speech builder", func(t *testing.T) {
+	t.Run("tts-minimax routes to replicate via the speech builder", func(t *testing.T) {
 		ttsTestEnv(t)
 		t.Setenv("REPLICATE_API_TOKEN", "rtok-env")
 		t.Setenv("OPENAI_API_KEY", "otok-env")
@@ -209,7 +231,7 @@ func TestTTSProviderRouting(t *testing.T) {
 
 		out := filepath.Join(t.TempDir(), "line.mp3")
 		printed, err := runRealMain(t, []string{
-			"-no-tui", "-model", "tts", "-prompt", "Chapter one. The rain had not stopped.",
+			"-no-tui", "-model", "tts-minimax", "-prompt", "Chapter one. The rain had not stopped.",
 			"-voice", "English_Deep-VoicedGentleman", "-emotion", "calm",
 			"-speed", "1.25", "-pitch", "-3", "-output", out,
 		})
@@ -244,6 +266,41 @@ func TestTTSProviderRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("-model tts routes to Gemini via the gemini builder", func(t *testing.T) {
+		ttsTestEnv(t)
+		t.Setenv("REPLICATE_API_TOKEN", "rtok-env")
+		t.Setenv("OPENAI_API_KEY", "otok-env")
+		c, repInputs, bodies, _ := newStubs(t, "wav")
+		withClient(t, c)
+
+		out := filepath.Join(t.TempDir(), "line.wav")
+		if _, err := runRealMain(t, []string{
+			"-no-tui", "-model", "tts", "-prompt", "The results are conclusive.",
+			"-voice", "Puck", "-instructions", "warm and slow, British accent", "-output", out,
+		}); err != nil {
+			t.Fatalf("realMain: %v", err)
+		}
+		if len(*bodies) != 0 {
+			t.Errorf("gemini model must not hit the OpenAI speech endpoint")
+		}
+		if len(*repInputs) != 1 {
+			t.Fatalf("replicate inputs: %d", len(*repInputs))
+		}
+		in := (*repInputs)[0]
+		if in["text"] != "The results are conclusive." || in["voice"] != "Puck" {
+			t.Errorf("gemini input: %#v", in)
+		}
+		if in["prompt"] != "warm and slow, British accent" {
+			t.Errorf("-instructions must become Gemini's style prompt: %#v", in["prompt"])
+		}
+		if _, ok := in["speed"]; ok {
+			t.Errorf("gemini has no speed field: %#v", in)
+		}
+		if data, err := os.ReadFile(out); err != nil || string(data) != "audio-bytes-wav" {
+			t.Errorf("saved file: %q err=%v", data, err)
+		}
+	})
+
 	t.Run("tts-elevenlabs routes to replicate with stability/style", func(t *testing.T) {
 		ttsTestEnv(t)
 		t.Setenv("REPLICATE_API_TOKEN", "rtok-env")
@@ -253,7 +310,7 @@ func TestTTSProviderRouting(t *testing.T) {
 
 		out := filepath.Join(t.TempDir(), "line.mp3")
 		if _, err := runRealMain(t, []string{
-			"-no-tui", "-model", "tts-elevenlabs", "-prompt", "[sarcastic] Oh, brilliant.",
+			"-no-tui", "-model", "tts-elevenlabs", "-prompt", "Oh, brilliant.",
 			"-voice", "Rachel", "-stability", "0", "-style", "0.8", "-speed", "1.1", "-output", out,
 		}); err != nil {
 			t.Fatalf("realMain: %v", err)
@@ -262,7 +319,7 @@ func TestTTSProviderRouting(t *testing.T) {
 			t.Errorf("elevenlabs model must not hit the OpenAI speech endpoint")
 		}
 		in := (*repInputs)[0]
-		if in["prompt"] != "[sarcastic] Oh, brilliant." || in["voice"] != "Rachel" {
+		if in["prompt"] != "Oh, brilliant." || in["voice"] != "Rachel" {
 			t.Errorf("elevenlabs input: %#v", in)
 		}
 		if in["stability"] != float64(0) || in["style"] != 0.8 || in["speed"] != 1.1 {
@@ -331,7 +388,7 @@ func TestTTSProviderRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("a .wav output asks for wav", func(t *testing.T) {
+	t.Run("a .wav output asks tts-minimax for wav", func(t *testing.T) {
 		ttsTestEnv(t)
 		t.Setenv("REPLICATE_API_TOKEN", "rtok-env")
 		c, repInputs, _, _ := newStubs(t, "wav")
@@ -339,7 +396,7 @@ func TestTTSProviderRouting(t *testing.T) {
 
 		out := filepath.Join(t.TempDir(), "line.wav")
 		if _, err := runRealMain(t, []string{
-			"-no-tui", "-model", "tts", "-prompt", "Narration.", "-output", out,
+			"-no-tui", "-model", "tts-minimax", "-prompt", "Narration.", "-output", out,
 		}); err != nil {
 			t.Fatalf("realMain: %v", err)
 		}
@@ -393,9 +450,11 @@ func TestHelpTextMentionsTTS(t *testing.T) {
 		"TEXT TO SPEECH",
 		"Text to speech",
 		"-model tts ",
+		"-model tts-minimax",
 		"-model tts-elevenlabs",
 		"-model tts-openai",
 		"-model tts-1-hd",
+		"google/gemini-3.1-flash-tts",
 		"minimax/speech-2.8-hd",
 		"elevenlabs/v3",
 		"gpt-4o-mini-tts",

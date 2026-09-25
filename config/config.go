@@ -118,6 +118,19 @@ replicate_name = "bytedance/seedance-2.0"
 [models.kling-v3]
 replicate_name = "kwaivgi/kling-v3-video"
 
+# Kling Avatar 2.0 via Replicate (-model kling-avatar). Talking head: one
+# portrait (-input-image) plus one audio clip (-audio) become a lip-synced
+# video. -prompt is optional (actions/emotion/camera); -video-resolution maps
+# onto its mode: 720p=std, 1080p=pro (default). Audio is kept.
+[models.kling-avatar]
+replicate_name = "kwaivgi/kling-avatar-v2"
+
+# Sync Labs lipsync-2-pro via Replicate (-model lipsync). Re-animates the mouth
+# in an existing video (-input-video) to match an audio clip (-audio). No
+# prompt. Optional -sync-mode, -sync-temperature, -active-speaker. Audio is kept.
+[models.lipsync]
+replicate_name = "sync/lipsync-2-pro"
+
 # Segmentation / background removal. Replicate-only. Returns a transparent
 # PNG matching the input image's dimensions. Use with -input-image.
 [models.remove-bg]
@@ -145,6 +158,8 @@ var builtinModels = map[string]ModelConfig{
 	"flux-2-pro":             {ReplicateName: "black-forest-labs/flux-2-pro"},
 	"nano-banana-2":          {ReplicateName: "google/nano-banana-2"},
 	"minimax-h3":             {ReplicateName: "minimax/h3"},
+	"kling-avatar":           {ReplicateName: "kwaivgi/kling-avatar-v2"},
+	"lipsync":                {ReplicateName: "sync/lipsync-2-pro"},
 	"kling-v3":               {ReplicateName: "kwaivgi/kling-v3-video"},
 	"upscale-pro":            {ReplicateName: "topazlabs/image-upscale"},
 	"grok-imagine-video":     {XaiName: "grok-imagine-video"},

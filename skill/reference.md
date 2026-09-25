@@ -121,6 +121,57 @@ curds -no-tui -model nano-banana-2 -image-resolution 4k -input-image a.png,b.png
   `-image-resolution` `1k|2k|4k`. PNG or JPEG only (no webp), no `-seed`,
   no `-size`.
 
+## Talking heads and lip-sync (Replicate, only when the user asks)
+
+Both are media-in/video-out; there is no prompt requirement and their audio is
+never stripped by default (`-strip-audio` defaults to false for these two).
+
+`-model kling-avatar` (`kwaivgi/kling-avatar-v2`): one portrait plus one audio
+clip become a lip-synced talking head (~5 min).
+
+- `-input-image`: exactly one portrait (jpg/png, ≤10MB).
+- `-audio`: mp3, wav, m4a, or aac, ≤5MB.
+- `-prompt`: optional (actions/emotion/camera).
+- `-video-resolution`: `720p` (std) or `1080p` (pro, default).
+
+`-model lipsync` (`sync/lipsync-2-pro`): re-animates the mouth in an existing
+video to match new audio.
+
+- `-input-video`: mp4. `-audio`: wav.
+- `-sync-mode`: `loop` (default), `bounce`, `cut_off`, `silence`, `remap`.
+- `-sync-temperature`: 0–1 (default 0.5). `-active-speaker`: bool.
+- No `-prompt`; passing one is rejected locally.
+
+`-crop-captions` crops a generated video to the top 74% of the frame
+(centered) to remove a burned-in caption band; ffmpeg re-encodes at crf 16 and
+copies audio, and the flag is a no-op without ffmpeg.
+
+## Raw Replicate passthrough (`curds run`)
+
+For models curds does not wrap (or when you need exact inputs):
+
+```bash
+curds run -schema OWNER/MODEL                       # list inputs, then exit
+curds run OWNER/MODEL prompt="text" duration=5      # run, download output
+curds run -json OWNER/MODEL image=@photo.png        # print prediction JSON
+```
+
+- Values are JSON when they parse (`5`, `true`, `[1,2]`, `{"a":1}`, `"text"`),
+  otherwise plain strings; `key=@path` uploads a local file as a data URL.
+- Repeat a key for an array (`ref=@a.png ref=@b.png`); commas in one value are
+  not split.
+- Flags: `-output PATH`, `-schema`, `-json`, `-token`, `-poll-interval`,
+  `-timeout`, `-verbose`. Multiple outputs become `PATH-1`, `PATH-2`, …;
+  saved paths print to stdout.
+
+## Seedance face rejection → Kling fallback
+
+A Seedance prediction that fails with `flagged as sensitive (E005)` (a
+realistic human face in an input image) is retried once on Kling 3.0 with the
+first image as `start_image`, the last frame as `end_image`, duration clamped
+to 3–15s, and a mapped ratio/resolution. `-no-fallback` turns that off; the
+log then carries `hint="retry with -model kling-v3"`.
+
 ## Background removal and upscaling (Replicate)
 
 Both take exactly one `-input-image` (file path, `http(s)` URL, or `data:`

@@ -6,9 +6,13 @@
 
 Generate images from the command line via OpenAI's gpt-image-2.5 (direct, the
 default), or images/videos via Replicate-hosted models such as Grok Imagine
-Video 1.5 and Seedance 2.0. Also wraps Replicate's `bria/remove-background`
+Video 1.5, Seedance 2.0, Kling 3.0, and the talking-head pair Kling Avatar 2.0
+(`-model kling-avatar`) and Sync Labs lipsync-2-pro (`-model lipsync`). Also
+wraps Replicate's `bria/remove-background`
 for one-shot transparent-PNG cutouts (`-model remove-bg`) and
-`nightmareai/real-esrgan` for super-resolution upscaling (`-model upscale`).
+`nightmareai/real-esrgan` for super-resolution upscaling (`-model upscale`),
+and `curds run OWNER/MODEL key=value …` drives any other Replicate model with
+raw inputs.
 Logs upstream progress in colorized
 [logfmt](https://brandur.org/logfmt). When prompt or token is missing
 curds clears the screen and drops into a Bubble Tea TUI with a CURDS
@@ -122,7 +126,7 @@ supports.
 | Provider  | Default model         | Endpoint                                                     |
 |-----------|-----------------------|--------------------------------------------------------------|
 | openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`; Sunburst via `-model gpt-image-2.5-sunburst`) | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`) |
-| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`) |
+| replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.0` (talking heads: `kwaivgi/kling-avatar-v2`, `sync/lipsync-2-pro`) | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`); `curds run` posts raw inputs to the same endpoint |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
 
 ## Editing / composing with reference images
@@ -331,6 +335,92 @@ Grok Imagine Video 1.5 supports:
 In prompts, refer to Seedance references as `[Image1]`, `[Video1]`,
 `[Audio1]`, etc.
 
+### Talking heads and lip-sync (Replicate)
+
+Two Replicate models whose input is media rather than a prompt:
+
+- `kling-avatar` — **Kling Avatar 2.0** (`kwaivgi/kling-avatar-v2`). One
+  portrait (`-input-image`) plus one audio clip (`-audio`: mp3, wav, m4a, aac)
+  become a lip-synced talking head, ~5 minutes per render. `-prompt` is
+  optional (actions/emotion/camera); `-video-resolution` maps onto its mode —
+  `720p` → `std`, `1080p` → `pro` (the default). Pro renders 1080p.
+- `lipsync` — **Sync Labs lipsync-2-pro** (`sync/lipsync-2-pro`). Re-animates
+  the mouth in an existing video (`-input-video`, mp4) to match new audio
+  (`-audio`, wav). No prompt. Optional `-sync-mode` (`loop`, `bounce`,
+  `cut_off`, `silence`, `remap`; default `loop`), `-sync-temperature` (0–1,
+  default 0.5), and `-active-speaker`.
+
+```bash
+# Animate a portrait with an audio clip
+curds -model kling-avatar -input-image portrait.png -audio voice.mp3 \
+      -prompt "she smiles and explains the product" -output /tmp/avatar.mp4
+
+# Lip-sync an existing clip
+curds -model lipsync -input-video clip.mp4 -audio voice.wav \
+      -sync-mode loop -output /tmp/lipsync.mp4
+```
+
+Notes:
+
+- `-output-format` is forced to mp4; `-aspect-ratio` is ignored (the portrait
+  or source video defines the frame).
+- `-strip-audio` defaults to **false** for these two models — the generated
+  audio is the point. Pass `-strip-audio` explicitly to silence a clip.
+- `-crop-captions` crops the result to the top 74% of the frame (centered
+  horizontally), removing the caption band some avatar/lip-sync models burn
+  into the bottom. ffmpeg re-encodes the video at crf 16 and copies the audio;
+  without ffmpeg it logs a skip and leaves the file alone.
+- `-no-fallback` disables Seedance's automatic face-rejection retry (see
+  below); it is irrelevant for these models.
+
+### Seedance face rejection → Kling fallback
+
+`bytedance/seedance-2.0` rejects any input image containing a realistic human
+face (`flagged as sensitive (E005)`), where Kling 3.0 accepts the same frames.
+When a Seedance prediction fails that way and the request carried an image
+(`-input-image`, `-last-frame-image`, or `-reference-image`), curds retries
+once on Kling 3.0: same prompt, first image as `start_image`, last frame as
+`end_image`, duration clamped to 3–15s, `-video-resolution` mapped
+(480p/720p → standard, 1080p → pro, 4k → 4k), and `-aspect-ratio` passed
+through when Kling supports it (else 16:9). The retry is logged as
+`event=model.fallback from=… to=… reason=seedance_rejected_face`.
+
+Pass `-no-fallback` to disable it; curds then returns the original error and
+logs `hint="retry with -model kling-v3"`.
+
+## Raw Replicate passthrough (`curds run`)
+
+`curds run` creates one prediction on any Replicate model with exactly the
+inputs you give it — no field mapping, no curds defaults:
+
+```bash
+curds run OWNER/MODEL[:VERSION] key=value ...
+
+# What does this model accept?
+curds run -schema sync/lipsync-2-pro
+
+# Upload local media, read the output URL instead of downloading
+curds run -json owner/model prompt="blend these" ref=@a.png ref=@b.png
+
+# Name the output (default: <output.directory>/<unix_milli>.<ext>)
+curds run -output /tmp/out.mp4 owner/model prompt="a slow pan"
+```
+
+Values are sent as JSON: `key=5`, `key=true`, `key=[1,2]`, `key={"a":1}`, and
+`key="quoted"` are sent as that JSON value; anything that does not parse is a
+plain string; `key=@path` uploads a local file as a data URL (http(s) and
+`data:` URLs pass through). Repeat a key to send an array:
+`ref=@a.png ref=@b.png`. One value holding a comma-separated list is **not**
+split — use JSON or repeat the key.
+
+Flags: `-output`, `-schema` (print name, type, default, enum, min/max, and
+description for each input, then exit), `-json` (print the final prediction
+JSON instead of downloading; also applied automatically when the output has no
+URLs, e.g. a text or blob output), `-token`, `-poll-interval`, `-timeout`,
+`-verbose`. Multiple outputs get `-1`, `-2`, … before the extension. Saved
+paths go to stdout; tokens resolve through the same chain as the main command.
+See `curds run -h`.
+
 ## Background removal / segmentation
 
 `-model remove-bg` runs `bria/remove-background` (BRIA RMBG 2.0) on
@@ -430,9 +520,6 @@ MiniMax H3 accepts `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, and
 For something custom, pass `-size WxH`. Anything not on a 16-pixel
 boundary is rounded to the nearest valid value (true 1080p `1920×1080`
 becomes `1920×1088`, for example).
-
-## Configuration
-
 `~/.config/curds/config.toml` (auto-created):
 
 ```toml
@@ -447,8 +534,6 @@ compression = 90
 
 [tokens]
 openai = ""
-replicate = ""
-xai = ""
 
 [defaults]
 quality = "auto"
@@ -478,6 +563,12 @@ replicate_name = "minimax/h3"
 
 [models.kling-v3]
 replicate_name = "kwaivgi/kling-v3-video"
+
+[models.kling-avatar]
+replicate_name = "kwaivgi/kling-avatar-v2"
+
+[models.lipsync]
+replicate_name = "sync/lipsync-2-pro"
 
 [models.upscale-pro]
 replicate_name = "topazlabs/image-upscale"
@@ -534,6 +625,11 @@ Run `curds -h` for the full list. Highlights:
 - `-mask` — mask file for OpenAI edits
 - `-video-duration` / `-video-resolution` — video controls
 - `-no-audio` — Seedance-only audio control
+- `-audio` / `-input-video` — talking-head and lip-sync media inputs
+- `-sync-mode` / `-sync-temperature` / `-active-speaker` — lipsync-2-pro knobs
+- `-crop-captions` — crop the bottom caption band off a generated video
+- `-no-fallback` — disable the Seedance → Kling 3.0 face-rejection retry
+- `curds run OWNER/MODEL key=value …` — raw Replicate passthrough (`-schema`, `-json`)
 - `-reference-image` / `-reference-video` / `-reference-audio` — Seedance references
 - `-scale` / `-face-enhance` — upscale factor and face restoration (`-model upscale`)
 - `-provider`, `-token`, `-model`

@@ -71,6 +71,17 @@ const (
 	// dialogue, and standard (720p) / pro (1080p) / 4k modes.
 	KlingVideoModel = "kwaivgi/kling-v3-video"
 
+	// KlingAvatarModel is Kling Avatar 2.0 on Replicate: a talking-head model
+	// that animates one portrait with one audio clip. The prompt is optional
+	// (actions/emotion/camera) and resolution maps onto its mode enum
+	// (720p = std, 1080p = pro). Selectable via -model kling-avatar.
+	KlingAvatarModel = "kwaivgi/kling-avatar-v2"
+
+	// LipsyncModel is Sync Labs' lipsync-2-pro on Replicate: it re-animates a
+	// mouth in an existing video to match an audio clip. No prompt; the source
+	// video and audio are the whole input. Selectable via -model lipsync.
+	LipsyncModel = "sync/lipsync-2-pro"
+
 	// FluxImageModel is FLUX.2 [pro] on Replicate: fast, cheap image generation
 	// with reference-image control. Uses megapixel resolutions, not sizes.
 	FluxImageModel = "black-forest-labs/flux-2-pro"
@@ -163,7 +174,26 @@ type Request struct {
 	GenerateAudio     *bool   // nil = provider default
 	Seed              int     // 0 = provider random seed
 	Scale             float64 // upscale factor for super-resolution models; 0 = model default
-	FaceEnhance       bool    // run GFPGAN face enhancement (upscale models only)
+	// Audio is the audio track for talking-head models (kling-avatar,
+	// lipsync): a file path, http(s) URL, or data URL.
+	Audio string
+	// InputVideo is the source video for lipsync models (file path, URL, or
+	// data URL).
+	InputVideo string
+	// SyncMode selects how lipsync-2-pro loops the source video: loop, bounce,
+	// cut_off, silence, or remap. Empty = the provider default (loop).
+	SyncMode string
+	// SyncTemperature is lipsync-2-pro's temperature, 0-1. A negative value
+	// means "provider default" (0.5) and omits the field.
+	SyncTemperature float64
+	// ActiveSpeaker tells lipsync-2-pro to animate the active speaker in the
+	// source video.
+	ActiveSpeaker bool
+	// NoFallback disables the automatic Seedance→Kling 3.0 retry when
+	// Seedance rejects a realistic human face as sensitive.
+	NoFallback bool
+
+	FaceEnhance bool // run GFPGAN face enhancement (upscale models only)
 
 	PollInterval time.Duration // Replicate poll cadence; 0 = default
 	Logger       io.Writer     // logfmt event sink (info/error always written when set)
@@ -286,11 +316,14 @@ func (r *Request) applyDefaults() {
 	}
 	if IsVideoModel(r.Model) && r.VideoResolution == "" {
 		switch {
+		case IsLipsyncModel(r.Model):
+			// lipsync-2-pro has no resolution knob: the source video's own
+			// resolution is what comes back.
 		case IsMinimaxVideoModel(r.Model):
 			// H3's vocabulary is 768P / 2K; default to the cheaper tier.
 			r.VideoResolution = "768p"
-		case IsKlingVideoModel(r.Model):
-			// Matches Kling's own default mode ("pro").
+		case IsKlingVideoModel(r.Model), IsKlingAvatarModel(r.Model):
+			// Matches Kling's own default mode ("pro"; 1080p for the avatar).
 			r.VideoResolution = "1080p"
 		default:
 			r.VideoResolution = "720p"
@@ -323,7 +356,7 @@ func (r *Request) Validate() error {
 	if r.Token == "" {
 		return fmt.Errorf("missing %s token", r.Provider)
 	}
-	if !IsSegmentationModel(r.Model) && !IsUpscaleModel(r.Model) && strings.TrimSpace(r.Prompt) == "" {
+	if !IsPromptlessModel(r.Model) && strings.TrimSpace(r.Prompt) == "" {
 		return errors.New("prompt is required")
 	}
 	if r.NumImages < 1 || r.NumImages > 10 {
@@ -424,6 +457,16 @@ func (r *Request) validateVideo() error {
 			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
 		}
 		return r.validateKlingVideo()
+	case IsKlingAvatarModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		return r.validateKlingAvatarVideo()
+	case IsLipsyncModel(r.Model):
+		if r.Provider != ProviderReplicate {
+			return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+		}
+		return r.validateLipsyncVideo()
 	default:
 		return fmt.Errorf("unsupported video model %q", r.Model)
 	}
@@ -539,6 +582,80 @@ func KlingMode(res string) string {
 		return "4k"
 	}
 	return ""
+}
+
+// validateKlingAvatarVideo checks a request for Kling Avatar 2.0 (Replicate).
+// It animates exactly one portrait with exactly one audio clip; the prompt is
+// optional (actions/emotion/camera) and `-video-resolution` maps onto the
+// model's mode enum: 720p = std, 1080p = pro (curds' default).
+func (r *Request) validateKlingAvatarVideo() error {
+	if len(r.InputImages) != 1 {
+		return fmt.Errorf("Kling Avatar 2.0 requires exactly one -input-image portrait, got %d", len(r.InputImages))
+	}
+	if strings.TrimSpace(r.Audio) == "" {
+		return errors.New("Kling Avatar 2.0 requires -audio PATH (mp3, wav, m4a, or aac)")
+	}
+	if KlingAvatarMode(r.VideoResolution) == "" {
+		return fmt.Errorf("video_resolution must be 720p or 1080p for Kling Avatar 2.0, got %q", r.VideoResolution)
+	}
+	if r.InputVideo != "" {
+		return errors.New("Kling Avatar 2.0 does not take -input-video; use -model lipsync to drive an existing video")
+	}
+	if r.LastFrameImage != "" || len(r.ReferenceImages) > 0 ||
+		len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("Kling Avatar 2.0 animates one portrait and one audio clip; it does not support -last-frame-image or references")
+	}
+	if r.Seed != 0 {
+		return errors.New("Kling Avatar 2.0 does not support -seed")
+	}
+	return nil
+}
+
+// KlingAvatarMode maps a curds -video-resolution value onto Kling Avatar 2.0's
+// mode enum, returning "" when the value is not one it accepts.
+func KlingAvatarMode(res string) string {
+	switch strings.ToLower(strings.TrimSpace(res)) {
+	case "720p":
+		return "std"
+	case "1080p":
+		return "pro"
+	}
+	return ""
+}
+
+// LipsyncAllowedSyncModes is sync/lipsync-2-pro's sync_mode enum: how the model
+// handles audio longer than the source video.
+var LipsyncAllowedSyncModes = map[string]bool{
+	"loop": true, "bounce": true, "cut_off": true, "silence": true, "remap": true,
+}
+
+// validateLipsyncVideo checks a request for sync/lipsync-2-pro (Replicate). It
+// re-animates the mouth in an existing video to match an audio clip, so it
+// needs -input-video and -audio and takes no prompt.
+func (r *Request) validateLipsyncVideo() error {
+	if strings.TrimSpace(r.InputVideo) == "" {
+		return errors.New("lipsync requires -input-video PATH (mp4)")
+	}
+	if strings.TrimSpace(r.Audio) == "" {
+		return errors.New("lipsync requires -audio PATH (wav)")
+	}
+	if strings.TrimSpace(r.Prompt) != "" {
+		return errors.New("lipsync does not take a prompt; drop -prompt (the source video drives the animation)")
+	}
+	if mode := strings.ToLower(strings.TrimSpace(r.SyncMode)); mode != "" && !LipsyncAllowedSyncModes[mode] {
+		return fmt.Errorf("sync_mode must be loop, bounce, cut_off, silence, or remap; got %q", r.SyncMode)
+	}
+	if r.SyncTemperature > 1 {
+		return fmt.Errorf("sync_temperature must be 0-1, got %v", r.SyncTemperature)
+	}
+	if len(r.InputImages) > 0 || r.LastFrameImage != "" || len(r.ReferenceImages) > 0 ||
+		len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("lipsync drives -input-video through -audio; it does not support -input-image, -last-frame-image, or references")
+	}
+	if r.Seed != 0 {
+		return errors.New("lipsync does not support -seed")
+	}
+	return nil
 }
 
 // validateMinimaxVideo checks a request for MiniMax H3 (Replicate). H3 accepts
@@ -832,7 +949,8 @@ func TopazUpscaleFactor(scale float64) string {
 func IsVideoModel(model string) bool {
 	return IsSeedanceModel(model) || IsGrokImagineVideoModel(model) ||
 		IsXaiVideoModel(model) || IsMinimaxVideoModel(model) ||
-		IsKlingVideoModel(model)
+		IsKlingVideoModel(model) || IsKlingAvatarModel(model) ||
+		IsLipsyncModel(model)
 }
 
 // IsMinimaxVideoModel reports whether the resolved provider model is MiniMax's
@@ -882,6 +1000,19 @@ func IsKlingVideoModel(model string) bool {
 	return matchesReplicateModel(model, KlingVideoModel)
 }
 
+// IsKlingAvatarModel reports whether the resolved provider model is Kling
+// Avatar 2.0 (a talking head built from one portrait plus one audio clip),
+// served by Replicate.
+func IsKlingAvatarModel(model string) bool {
+	return matchesReplicateModel(model, KlingAvatarModel)
+}
+
+// IsLipsyncModel reports whether the resolved provider model is Sync Labs'
+// lipsync-2-pro, served by Replicate.
+func IsLipsyncModel(model string) bool {
+	return matchesReplicateModel(model, LipsyncModel)
+}
+
 // IsFluxImageModel reports whether the resolved provider model is FLUX.2 [pro].
 func IsFluxImageModel(model string) bool {
 	return matchesReplicateModel(model, FluxImageModel)
@@ -927,6 +1058,14 @@ func IsSegmentationModel(model string) bool {
 // request-building path.
 func IsUpscaleModel(model string) bool {
 	return matchesReplicateModel(model, DefaultUpscaleModel) || IsTopazUpscaleModel(model)
+}
+
+// IsPromptlessModel reports whether the model runs without a text prompt: it is
+// driven by input media (segmentation, upscaling, lip-sync) or treats the
+// prompt as optional (Kling Avatar 2.0).
+func IsPromptlessModel(model string) bool {
+	return IsSegmentationModel(model) || IsUpscaleModel(model) ||
+		IsLipsyncModel(model) || IsKlingAvatarModel(model)
 }
 
 // AutoDetectProvider picks a provider based on the supplied env lookup.

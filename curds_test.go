@@ -1477,6 +1477,12 @@ func TestIsVideoModel(t *testing.T) {
 		"minimax/h3":                          true,
 		"kwaivgi/kling-v3-video":              true,
 		"kwaivgi/kling-v3-video:v1":           true,
+		"kwaivgi/kling-avatar-v2":             true,
+		"kwaivgi/kling-avatar-v2:v1":          true,
+		"kwaivgi/kling-avatar-v2-evil/x":      false,
+		"sync/lipsync-2-pro":                  true,
+		"sync/lipsync-2-pro:v1":               true,
+		"sync/lipsync-2-pro-evil/x":           false,
 		"kwaivgi/kling-v3-video-evil/x":       false,
 		"MiniMax/H3":                          true,
 		"minimax/h3:abc123":                   true,
@@ -2311,4 +2317,502 @@ func TestXai1080pRejectedBeforeNetwork(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("unsupported request made %d network calls", calls)
 	}
+}
+
+func TestIsPromptlessModel(t *testing.T) {
+	cases := map[string]bool{
+		"bria/remove-background":    true,
+		"nightmareai/real-esrgan":   true,
+		"sync/lipsync-2-pro":        true,
+		"kwaivgi/kling-avatar-v2":   true,
+		"kwaivgi/kling-v3-video":    false,
+		"bytedance/seedance-2.0":    false,
+		"openai/gpt-image-2":        false,
+		"sync/lipsync-2-pro-evil/x": false,
+		"":                          false,
+	}
+	for in, want := range cases {
+		if got := IsPromptlessModel(in); got != want {
+			t.Errorf("IsPromptlessModel(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestRequestValidateKlingAvatar(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:        ProviderReplicate,
+			Token:           "rtok",
+			Model:           KlingAvatarModel,
+			NumImages:       1,
+			OutputFormat:    "mp4",
+			VideoResolution: "1080p",
+			InputImages:     []string{"https://example.com/portrait.png"},
+			Audio:           "https://example.com/voice.mp3",
+		}
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"portrait plus audio, no prompt", func(r *Request) {}, ""},
+		{"optional prompt", func(r *Request) { r.Prompt = "she smiles at the camera" }, ""},
+		{"720p is std", func(r *Request) { r.VideoResolution = "720p" }, ""},
+		{"rejects empty resolution", func(r *Request) { r.VideoResolution = "" }, "720p or 1080p"},
+		{"rejects 4k", func(r *Request) { r.VideoResolution = "4k" }, "720p or 1080p"},
+		{"rejects 480p", func(r *Request) { r.VideoResolution = "480p" }, "720p or 1080p"},
+		{"requires exactly one portrait", func(r *Request) { r.InputImages = nil }, "exactly one -input-image"},
+		{"rejects two portraits", func(r *Request) {
+			r.InputImages = []string{"https://example.com/a.png", "https://example.com/b.png"}
+		}, "exactly one -input-image"},
+		{"requires audio", func(r *Request) { r.Audio = "" }, "requires -audio"},
+		{"rejects input video", func(r *Request) { r.InputVideo = "https://example.com/clip.mp4" }, "does not take -input-video"},
+		{"rejects end frame", func(r *Request) { r.LastFrameImage = "https://example.com/end.png" }, "does not support -last-frame-image"},
+		{"rejects references", func(r *Request) { r.ReferenceImages = []string{"https://example.com/ref.png"} }, "does not support"},
+		{"rejects seed", func(r *Request) { r.Seed = 2 }, "does not support -seed"},
+		{"rejects xai provider", func(r *Request) { r.Provider = ProviderXai }, "does not support model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("got %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestKlingAvatarModeMapping(t *testing.T) {
+	cases := map[string]string{
+		"720p": "std", "1080p": "pro", " 1080P ": "pro",
+		"480p": "", "4k": "", "": "",
+	}
+	for in, want := range cases {
+		if got := KlingAvatarMode(in); got != want {
+			t.Errorf("KlingAvatarMode(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestRequestValidateLipsync(t *testing.T) {
+	base := func() Request {
+		return Request{
+			Provider:     ProviderReplicate,
+			Token:        "rtok",
+			Model:        LipsyncModel,
+			NumImages:    1,
+			OutputFormat: "mp4",
+			InputVideo:   "https://example.com/clip.mp4",
+			Audio:        "https://example.com/voice.wav",
+		}
+	}
+	cases := []struct {
+		name       string
+		mut        func(r *Request)
+		wantErrSub string
+	}{
+		{"video plus audio, no prompt", func(r *Request) {}, ""},
+		{"sync mode and temperature", func(r *Request) {
+			r.SyncMode = "bounce"
+			r.SyncTemperature = 0.7
+			r.ActiveSpeaker = true
+		}, ""},
+		{"unset temperature is fine", func(r *Request) { r.SyncTemperature = -1 }, ""},
+		{"requires input video", func(r *Request) { r.InputVideo = "" }, "requires -input-video"},
+		{"requires audio", func(r *Request) { r.Audio = "" }, "requires -audio"},
+		{"rejects prompt", func(r *Request) { r.Prompt = "say hi" }, "does not take a prompt"},
+		{"rejects unknown sync mode", func(r *Request) { r.SyncMode = "shuffle" }, "sync_mode must be loop"},
+		{"rejects temperature above 1", func(r *Request) { r.SyncTemperature = 1.5 }, "sync_temperature must be 0-1"},
+		{"rejects input image", func(r *Request) { r.InputImages = []string{"https://example.com/a.png"} }, "does not support -input-image"},
+		{"rejects seed", func(r *Request) { r.Seed = 7 }, "does not support -seed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base()
+			tc.mut(&r)
+			err := r.Validate()
+			if tc.wantErrSub == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("got %v, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+// Kling Avatar 2.0 names its inputs `image` and `audio`, expresses resolution
+// as its mode enum, and must not receive the Seedance/Kling video fields.
+func TestReplicateProviderKlingAvatarHappyPath(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		if err := json.Unmarshal(body, &b); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		input, _ := b["input"].(map[string]any)
+		bodies = append(bodies, input)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "av-1", "status": "succeeded", "output": assetServer(t).URL + "/out.mp4",
+		})
+	}))
+	defer srv.Close()
+
+	p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+	req := &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           KlingAvatarModel,
+		Prompt:          "she smiles and waves",
+		OutputFormat:    "mp4",
+		NumImages:       1,
+		VideoResolution: "720p",
+		InputImages:     []string{"https://example.com/portrait.png"},
+		Audio:           "https://example.com/voice.mp3",
+	}
+	res, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("videos: %#v", res.Videos)
+	}
+	got := bodies[0]
+	if got["image"] != "https://example.com/portrait.png" {
+		t.Errorf("image: %#v", got["image"])
+	}
+	if got["audio"] != "https://example.com/voice.mp3" {
+		t.Errorf("audio: %#v", got["audio"])
+	}
+	if got["mode"] != "std" {
+		t.Errorf("720p must map to std: %#v", got["mode"])
+	}
+	if got["prompt"] != "she smiles and waves" {
+		t.Errorf("prompt: %#v", got["prompt"])
+	}
+	for _, forbidden := range []string{"generate_audio", "duration", "aspect_ratio", "start_image"} {
+		if _, ok := got[forbidden]; ok {
+			t.Errorf("kling-avatar must not send %q: %#v", forbidden, got)
+		}
+	}
+}
+
+// An empty prompt is omitted rather than sent as "".
+func TestReplicateProviderKlingAvatarOmitsEmptyPrompt(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		got, _ = b["input"].(map[string]any)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "av-2", "status": "succeeded", "output": assetServer(t).URL + "/out.mp4"})
+	}))
+	defer srv.Close()
+
+	p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+	if _, err := p.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           KlingAvatarModel,
+		OutputFormat:    "mp4",
+		NumImages:       1,
+		VideoResolution: "1080p",
+		InputImages:     []string{"https://example.com/portrait.png"},
+		Audio:           "https://example.com/voice.mp3",
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := got["prompt"]; ok {
+		t.Errorf("empty prompt must be omitted: %#v", got)
+	}
+	if got["mode"] != "pro" {
+		t.Errorf("1080p must map to pro: %#v", got["mode"])
+	}
+}
+
+func TestReplicateProviderLipsyncHappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models/sync/lipsync-2-pro/predictions" {
+			t.Errorf("path: %q", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		if err := json.Unmarshal(body, &b); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		input, _ := b["input"].(map[string]any)
+		if input["video"] != "https://example.com/clip.mp4" {
+			t.Errorf("video: %#v", input["video"])
+		}
+		if input["audio"] != "https://example.com/voice.wav" {
+			t.Errorf("audio: %#v", input["audio"])
+		}
+		if input["sync_mode"] != "bounce" {
+			t.Errorf("sync_mode: %#v", input["sync_mode"])
+		}
+		if input["temperature"] != 0.7 {
+			t.Errorf("temperature: %#v", input["temperature"])
+		}
+		if input["active_speaker"] != true {
+			t.Errorf("active_speaker: %#v", input["active_speaker"])
+		}
+		if _, ok := input["prompt"]; ok {
+			t.Errorf("lipsync must not send a prompt: %#v", input)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "ls-1", "status": "succeeded", "output": assetServer(t).URL + "/out.mp4"})
+	}))
+	defer srv.Close()
+
+	p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+	res, err := p.Generate(context.Background(), &Request{
+		Provider:        ProviderReplicate,
+		Token:           "rtok",
+		Model:           LipsyncModel,
+		OutputFormat:    "mp4",
+		NumImages:       1,
+		InputVideo:      "https://example.com/clip.mp4",
+		Audio:           "https://example.com/voice.wav",
+		SyncMode:        "bounce",
+		SyncTemperature: 0.7,
+		ActiveSpeaker:   true,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(res.Videos) != 1 {
+		t.Fatalf("videos: %#v", res.Videos)
+	}
+}
+
+// assetServer returns a throwaway server that serves one mp4 render, for the
+// duration of the test.
+func assetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("rendered-mp4"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Seedance rejects realistic human faces ("flagged as sensitive (E005)").
+// curds must retry once on Kling 3.0 with mapped inputs.
+func TestSeedanceFaceRejectionFallsBackToKling(t *testing.T) {
+	video := assetServer(t)
+
+	type attempt struct {
+		path  string
+		input map[string]any
+	}
+	newServer := func(failFirst func() map[string]any) (*httptest.Server, *[]attempt) {
+		attempts := &[]attempt{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			var b map[string]any
+			if err := json.Unmarshal(body, &b); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			input, _ := b["input"].(map[string]any)
+			*attempts = append(*attempts, attempt{path: r.URL.Path, input: input})
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/models/bytedance/seedance-2.0/predictions" {
+				_ = json.NewEncoder(w).Encode(failFirst())
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "kling-1", "status": "succeeded", "output": video.URL + "/out.mp4",
+			})
+		}))
+		t.Cleanup(srv.Close)
+		return srv, attempts
+	}
+
+	seedanceReject := func() map[string]any {
+		return map[string]any{
+			"id": "seed-1", "status": "failed",
+			"error": "The provided input was flagged as sensitive (E005)",
+		}
+	}
+	baseReq := func() *Request {
+		return &Request{
+			Provider:        ProviderReplicate,
+			Token:           "rtok",
+			Model:           SeedanceVideoModel,
+			Prompt:          "she turns to camera and speaks",
+			OutputFormat:    "mp4",
+			NumImages:       1,
+			VideoResolution: "480p",
+			AspectRatio:     "adaptive",
+			VideoDuration:   -1,
+			InputImages:     []string{"https://example.com/start.png"},
+			LastFrameImage:  "https://example.com/end.png",
+		}
+	}
+
+	t.Run("falls back once with mapped inputs", func(t *testing.T) {
+		srv, attempts := newServer(seedanceReject)
+		var logs bytes.Buffer
+		req := baseReq()
+		req.Logger = &logs
+		p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+
+		res, err := p.Generate(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if len(res.Videos) != 1 || string(res.Videos[0].Bytes) != "rendered-mp4" {
+			t.Fatalf("videos: %#v", res.Videos)
+		}
+		if len(*attempts) != 2 {
+			t.Fatalf("expected seedance then kling, got %#v", *attempts)
+		}
+		if (*attempts)[1].path != "/models/kwaivgi/kling-v3-video/predictions" {
+			t.Errorf("fallback path: %q", (*attempts)[1].path)
+		}
+		got := (*attempts)[1].input
+		if got["start_image"] != "https://example.com/start.png" {
+			t.Errorf("start_image: %#v", got["start_image"])
+		}
+		if got["end_image"] != "https://example.com/end.png" {
+			t.Errorf("end_image: %#v", got["end_image"])
+		}
+		if got["prompt"] != req.Prompt {
+			t.Errorf("prompt: %#v", got["prompt"])
+		}
+		if got["mode"] != "standard" { // 480p → 720p standard
+			t.Errorf("mode: %#v", got["mode"])
+		}
+		if got["aspect_ratio"] != "16:9" { // adaptive is not a Kling ratio
+			t.Errorf("aspect_ratio: %#v", got["aspect_ratio"])
+		}
+		if got["duration"] != float64(5) { // -1 clamped into 3-15
+			t.Errorf("duration: %#v", got["duration"])
+		}
+		if _, ok := got["reference_images"]; ok {
+			t.Errorf("kling has no reference_images: %#v", got)
+		}
+		for _, want := range []string{"event=model.fallback", "reason=\"seedance_rejected_face\""} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("logs missing %q:\n%s", want, logs.String())
+			}
+		}
+	})
+
+	t.Run("only the first image becomes the start frame", func(t *testing.T) {
+		srv, attempts := newServer(seedanceReject)
+		req := baseReq()
+		req.InputImages = []string{"https://example.com/a.png", "https://example.com/b.png"}
+		req.LastFrameImage = ""
+		p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+
+		if _, err := p.Generate(context.Background(), req); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if len(*attempts) != 2 {
+			t.Fatalf("expected a retry, got %#v", *attempts)
+		}
+		got := (*attempts)[1].input
+		if got["start_image"] != "https://example.com/a.png" {
+			t.Errorf("start_image: %#v", got["start_image"])
+		}
+		if _, ok := got["reference_images"]; ok {
+			t.Errorf("references must not be forwarded to kling: %#v", got)
+		}
+	})
+
+	t.Run("no-fallback returns the original error with a hint", func(t *testing.T) {
+		srv, attempts := newServer(seedanceReject)
+		var logs bytes.Buffer
+		req := baseReq()
+		req.NoFallback = true
+		req.Logger = &logs
+		p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+
+		_, err := p.Generate(context.Background(), req)
+		if err == nil || !strings.Contains(err.Error(), "E005") {
+			t.Fatalf("want the original seedance error, got %v", err)
+		}
+		if len(*attempts) != 1 {
+			t.Fatalf("no retry expected, got %#v", *attempts)
+		}
+		for _, want := range []string{"event=model.fallback_disabled", "retry with -model kling-v3"} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("logs missing %q:\n%s", want, logs.String())
+			}
+		}
+	})
+
+	t.Run("non-face failure is not retried", func(t *testing.T) {
+		srv, attempts := newServer(func() map[string]any {
+			return map[string]any{"id": "seed-2", "status": "failed", "error": "CUDA out of memory"}
+		})
+		p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+
+		_, err := p.Generate(context.Background(), baseReq())
+		if err == nil || !strings.Contains(err.Error(), "CUDA") {
+			t.Fatalf("want the original failure, got %v", err)
+		}
+		if len(*attempts) != 1 {
+			t.Fatalf("no retry expected, got %#v", *attempts)
+		}
+	})
+
+	t.Run("text-to-video is not retried", func(t *testing.T) {
+		srv, attempts := newServer(seedanceReject)
+		req := baseReq()
+		req.InputImages = nil
+		req.LastFrameImage = ""
+		p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+
+		_, err := p.Generate(context.Background(), req)
+		if err == nil {
+			t.Fatal("want the original failure")
+		}
+		if len(*attempts) != 1 {
+			t.Fatalf("a request with no image input must not fall back, got %#v", *attempts)
+		}
+	})
+
+	t.Run("failing fallback keeps the original error", func(t *testing.T) {
+		attempts := &[]attempt{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*attempts = append(*attempts, attempt{path: r.URL.Path})
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/models/bytedance/seedance-2.0/predictions" {
+				_ = json.NewEncoder(w).Encode(seedanceReject())
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "k", "status": "failed", "error": "kling is down"})
+		}))
+		defer srv.Close()
+		var logs bytes.Buffer
+		req := baseReq()
+		req.Logger = &logs
+		p := &ReplicateProvider{HTTPClient: srv.Client(), APIBase: srv.URL}
+
+		_, err := p.Generate(context.Background(), req)
+		if err == nil || !strings.Contains(err.Error(), "E005") {
+			t.Fatalf("the original seedance error should survive: %v", err)
+		}
+		if !strings.Contains(logs.String(), "event=model.fallback_failed") {
+			t.Errorf("expected a fallback_failed event:\n%s", logs.String())
+		}
+	})
 }

@@ -73,6 +73,13 @@ type cliOptions struct {
 	imageResolution   string
 	videoDuration     int
 	videoResolution   string
+	audio             string
+	inputVideo        string
+	syncMode          string
+	syncTemperature   float64
+	activeSpeaker     bool
+	cropCaptions      bool
+	noFallback        bool
 	noAudio           bool
 	stripAudio        bool
 	seed              int
@@ -105,6 +112,12 @@ func main() {
 
 func realMain(logger *logfmtLogger, start time.Time) error {
 	logger.info("curds.start", "version", version)
+
+	// `curds run` is a separate surface: a raw Replicate passthrough that owns
+	// its own flags and never touches the generation pipeline below.
+	if len(os.Args) > 1 && os.Args[1] == "run" {
+		return realMainRun(logger, start, os.Args[2:])
+	}
 
 	opts, err := parseFlags()
 	if err != nil {
@@ -225,10 +238,16 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 
-	// Segmentation (bria/remove-background) and upscale (real-esrgan) models
-	// take an input image instead of a prompt — don't drop into the
+	// Models driven by input media (segmentation, upscaling, lipsync, Kling
+	// Avatar) fail fast on a missing file — exit 2 — instead of dropping into
+	// a TUI that cannot ask for it.
+	if err := validateMediaInputs(resolvedModel, opts); err != nil {
+		return &usageError{err: err}
+	}
+
+	// The media-driven models need no prompt, so don't drop into the
 	// prompt-asking TUI for them.
-	needsPrompt := !curds.IsSegmentationModel(resolvedModel) && !curds.IsUpscaleModel(resolvedModel)
+	needsPrompt := !curds.IsPromptlessModel(resolvedModel)
 	needTUI := !opts.noTUI && (token == "" || opts.provider == "" || (needsPrompt && opts.prompt == ""))
 	if needTUI {
 		return runInteractive(start, logger, opts, cfg, token)
@@ -240,7 +259,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if needsPrompt && strings.TrimSpace(opts.prompt) == "" {
 		return errors.New("prompt is required: use -prompt, pipe to stdin, or omit -no-tui")
 	}
-	if !needsPrompt && len(opts.inputImages) == 0 {
+	if !needsPrompt && len(opts.inputImages) == 0 && opts.inputVideo == "" {
 		return errors.New("this model requires -input-image PATH")
 	}
 
@@ -254,7 +273,6 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 
 	req := buildLibRequest(opts, token, resolvedModel, os.Stderr)
 	logger.info("generation.dispatch",
-		"provider", req.Provider,
 		"model", req.Model,
 		"aspect_ratio", req.AspectRatio,
 		"output", opts.outputPath,
@@ -273,6 +291,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		return fmt.Errorf("save: %w", err)
 	}
 
+	maybeCropCaptions(opts, len(res.Videos), paths, os.Stderr)
 	maybeStripAudio(opts, len(res.Videos), paths, os.Stderr)
 
 	logger.info("curds.completed",
@@ -472,6 +491,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		if err != nil {
 			return tui.GenerateResult{Err: err}
 		}
+		maybeCropCaptions(opts, len(res.Videos), paths, logsink)
 		maybeStripAudio(opts, len(res.Videos), paths, logsink)
 		fmt.Fprint(logsink, curds.FormatLogLine(
 			"info", "curds.completed",
@@ -517,6 +537,12 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		OutputCompression: opts.outputCompression,
 		Background:        opts.background,
 		Moderation:        opts.moderation,
+		Audio:             opts.audio,
+		InputVideo:        opts.inputVideo,
+		SyncMode:          opts.syncMode,
+		SyncTemperature:   opts.syncTemperature,
+		ActiveSpeaker:     opts.activeSpeaker,
+		NoFallback:        opts.noFallback,
 		User:              opts.user,
 		ReplicateBYOKey:   opts.replicateBYOKey,
 		InputImages:       []string(opts.inputImages),
@@ -642,7 +668,15 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.noAudio, "no-audio", false, "Disable Seedance synchronized audio generation")
 	flag.BoolVar(&opts.stripAudio, "strip-audio", true, "Strip the audio track from generated videos via ffmpeg if installed (default: true)")
 	flag.IntVar(&opts.seed, "seed", 0, "Random seed for supported Replicate models (0 = random)")
+	flag.StringVar(&opts.audio, "audio", "", "Audio track for kling-avatar / lipsync: mp3, wav, m4a, aac (kling-avatar), wav (lipsync)")
+	flag.StringVar(&opts.inputVideo, "input-video", "", "Source video for -model lipsync (mp4)")
+	flag.StringVar(&opts.syncMode, "sync-mode", "", "lipsync sync_mode: loop, bounce, cut_off, silence, remap (default: loop)")
+	flag.Float64Var(&opts.syncTemperature, "sync-temperature", -1, "lipsync temperature 0-1 (default: 0.5, the model's own default)")
+	flag.BoolVar(&opts.activeSpeaker, "active-speaker", false, "lipsync: animate the active speaker in the source video")
+	flag.BoolVar(&opts.cropCaptions, "crop-captions", false, "Crop generated videos to the top 74% of the frame, removing captions some avatar/lip-sync models burn in (ffmpeg, re-encodes video)")
+	flag.BoolVar(&opts.noFallback, "no-fallback", false, "Disable the automatic Seedance→Kling 3.0 retry when Seedance rejects a face as sensitive")
 	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
+
 	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement (upscale models only)")
 
 	flag.DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Polling interval for replicate")
@@ -664,6 +698,9 @@ func parseFlags() (*cliOptions, error) {
 	opts.provider = strings.ToLower(strings.TrimSpace(opts.provider))
 	if opts.outputCompression > 100 {
 		return nil, &usageError{err: fmt.Errorf("output-compression must be 0-100, got %d", opts.outputCompression)}
+	}
+	if opts.syncTemperature < -1 || opts.syncTemperature > 1 {
+		return nil, &usageError{err: fmt.Errorf("sync-temperature must be 0-1, got %v", opts.syncTemperature)}
 	}
 	return opts, nil
 }
@@ -825,17 +862,21 @@ SYNOPSIS
   curds [flags]
   curds -prompt PROMPT [flags]
   echo PROMPT | curds [flags]
+  curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]   (raw passthrough)
 
 DESCRIPTION
   Generates images using gpt-image-2.5 (default; gpt-image-2, FLUX.2 [pro] and
   Nano Banana 2 are also available), videos with Seedance 2.0 on Replicate (default
   for mp4; Kling 3.0, MiniMax H3, Grok Imagine Video also selectable),
-  removes backgrounds
+  talking heads and lip-sync with Kling Avatar 2.0 (-model kling-avatar) and
+  Sync Labs lipsync-2-pro (-model lipsync), removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
   nightmareai/real-esrgan (-model upscale) on Replicate. Saves to
   ~/Desktop/curds/<unix_milli>.<format> unless -output is given. Auto-creates
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
-  when prompt or token is missing (suppress with -no-tui).
+  when prompt or token is missing (suppress with -no-tui). The separate
+  "curds run" subcommand drives any Replicate model with raw inputs; see
+  RUN SUBCOMMAND below or "curds run -h".
 
 PROVIDERS
   openai     OpenAI Image API direct   [recommended for OpenAI models]
@@ -853,8 +894,11 @@ PROVIDERS
              Default image model: openai/gpt-image-2
              Default video model: bytedance/seedance-2.0
              Also available: -model flux-2-pro, nano-banana-2,
-                             kling-v3, minimax-h3,
+                             kling-v3, kling-avatar, minimax-h3, lipsync,
                              grok-imagine-video-1.5, upscale-pro
+             Raw passthrough: -model owner/name via the "curds run" subcommand
+                              runs any Replicate model with caller-supplied
+                              inputs (see RUN SUBCOMMAND).
              Use when: you don't have direct OpenAI access yet, or you
              want to run a non-OpenAI image or video model hosted on Replicate.
              Tradeoffs: extra hop adds latency, the gpt-image-2 wrapper
@@ -996,14 +1040,18 @@ FLAGS
                                 MiniMax H3: 4-15; xai/Grok: 1-15
                                 (default: 5)
     -video-resolution VALUE      Kling: 720p, 1080p, 4k (default: 1080p);
+                                Kling Avatar: 720p (std) or 1080p (pro),
+                                default 1080p;
                                 MiniMax H3: 768p, 2k (default: 768p);
                                 Grok/xai: 480p, 720p; Seedance also 1080p
-                                (default: 720p)
+                                (default: 720p); lipsync ignores it
     -no-audio                    disable Seedance / Kling synchronized audio
                                 (MiniMax H3 and xai/Grok always emit audio)
     -strip-audio                 remove the audio track from generated
-                                videos via ffmpeg (default: true). xai/Grok
-                                always emit audio and the x.ai API has no
+                                videos via ffmpeg (default: true; off for
+                                kling-avatar / lipsync, whose audio is the
+                                point). xai/Grok always emit audio and the
+                                x.ai API has no
                                 mute option, so this is the way to get silent
                                 clips. No-op without ffmpeg on PATH; pass
                                 -strip-audio=false to keep audio.
@@ -1018,6 +1066,61 @@ FLAGS
     -reference-video PATH        MiniMax H3 / Seedance reference video(s), up to 3
     -reference-audio PATH        MiniMax H3 / Seedance reference audio(s), up to 3
 
+  Talking heads / lip-sync (Replicate)
+    -model kling-avatar          Kling Avatar 2.0: one portrait
+                                 (-input-image) plus one audio clip
+                                 (-audio: mp3, wav, m4a, aac) become a
+                                 lip-synced talking head. -prompt is
+                                 optional (actions/emotion/camera);
+                                 -video-resolution 720p/1080p selects
+                                 std/pro (default: pro). Audio is kept.
+    -model lipsync               Sync Labs lipsync-2-pro: re-animates the
+                                 mouth in -input-video (mp4) to match
+                                 -audio (wav). No prompt. Audio is kept.
+    -input-video PATH            lipsync source video
+    -audio PATH                  audio track for kling-avatar / lipsync
+    -sync-mode VALUE             lipsync: loop, bounce, cut_off, silence,
+                                 remap (default: loop)
+    -sync-temperature 0-1        lipsync temperature (default: 0.5)
+    -active-speaker              lipsync: animate the active speaker
+    -crop-captions               crop generated videos to the top 74% of
+                                 the frame, centered, removing captions
+                                 some avatar/lip-sync models burn into the
+                                 bottom. ffmpeg re-encodes the video
+                                 (crf 16) and copies the audio. Default:
+                                 false; no-op without ffmpeg on PATH.
+    -no-fallback                 disable the automatic Seedance→Kling 3.0
+                                 retry described under SEEDANCE FACE
+                                 REJECTION below
+
+RUN SUBCOMMAND
+  curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]
+    Creates one Replicate prediction with exactly the inputs given — no field
+    mapping, no curds defaults — then polls it and downloads the output.
+    Use it for models curds does not wrap first-class.
+      key=@file        upload a local file as a data URL
+      key=5 key=true key='["a","b"]' key='"text"'
+                       sent as that JSON value
+      key=plaintext    any value that is not JSON is sent as a string
+      ref=@a.png ref=@b.png
+                       repeating a key sends an array
+    Flags: -output PATH (default <output.directory>/<unix_milli>.<ext>, with
+    -1, -2, … suffixes when the model returns several files), -schema (print
+    the model's inputs — name, type, default, enum, min/max, description —
+    one per line, then exit), -json (print the final prediction JSON instead
+    of downloading; applied automatically when the output has no URLs),
+    -token, -poll-interval, -timeout, -verbose. Output paths go to stdout;
+    tokens come from the same chain as the main command. See "curds run -h".
+
+SEEDANCE FACE REJECTION
+  Seedance 2.0 rejects any input image containing a realistic human face with
+  "flagged as sensitive (E005)". When a Seedance prediction fails that way and
+  the request carried an image, curds retries once on Kling 3.0 with the same
+  prompt, the first image as start_image, the last frame as end_image, the
+  duration clamped to Kling's 3-15s, and a mapped ratio and resolution.
+  Logged as event=model.fallback. -no-fallback turns the retry off and returns
+  the original error (with hint="retry with -model kling-v3" in the log).
+
 ASPECT RATIOS
   Replicate gpt-image-2 accepts only:  1:1, 3:2, 2:3
   Grok Imagine Video 1.5 accepts:       auto, 16:9, 4:3, 1:1,
@@ -1029,6 +1132,8 @@ ASPECT RATIOS
   MiniMax H3 accepts:                   21:9, 16:9, 4:3, 1:1, 3:4,
                                        9:16, adaptive
   Kling 3.0 accepts:                    16:9, 9:16, 1:1
+  Kling Avatar 2.0, lipsync accept:    no -aspect-ratio — the portrait or
+                                       source video defines the frame
   FLUX.2 [pro] accepts:                 match_input_image, 1:1, 16:9,
                                        3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3
                                        (or -size WxH, 256-2048 per edge)
@@ -1160,6 +1265,23 @@ EXAMPLES
   curds -provider replicate -model upscale -face-enhance \
         -input-image headshot.jpg -output headshot-4x.png
 
+  # Talking head: animate a portrait with an audio clip (Kling Avatar 2.0)
+  curds -model kling-avatar -input-image portrait.png -audio voice.mp3 \
+        -prompt "she smiles and explains the product, gentle camera push" \
+        -output /tmp/avatar.mp4
+
+  # Lip-sync an existing video to a new audio track (sync/lipsync-2-pro)
+  curds -model lipsync -input-video clip.mp4 -audio voice.wav \
+        -sync-mode loop -output /tmp/lipsync.mp4
+
+  # Avatar render with the burned-in caption band cropped off
+  curds -model kling-avatar -input-image portrait.png -audio voice.mp3 \
+        -crop-captions -output /tmp/avatar.mp4
+
+  # Any Replicate model, raw inputs (see "curds run -h")
+  curds run -schema sync/lipsync-2-pro
+  curds run sync/lipsync-2-pro video=@clip.mp4 audio=@voice.wav sync_mode=loop
+
 FILES
   ~/.config/curds/config.toml    config (auto-created)
   ~/Desktop/curds/               default output directory (auto-created)
@@ -1221,6 +1343,16 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 }
 
 func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string, logger *logfmtLogger) {
+	// The talking-head models exist to produce a voice track, so -strip-audio
+	// stays off for them unless the user asked for it explicitly.
+	if curds.IsKlingAvatarModel(model) || curds.IsLipsyncModel(model) {
+		if opts.stripAudio && !flagWasSet("strip-audio") {
+			opts.stripAudio = false
+			if logger != nil {
+				logger.info("audio.strip_disabled", "model", model, "reason", "the generated audio is the point")
+			}
+		}
+	}
 	switch {
 	case curds.IsVideoModel(model):
 		if !flagWasSet("output-format") {
@@ -1424,6 +1556,93 @@ func stripAudioInPlace(ffmpeg, path string) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
+	}
+	return nil
+}
+
+// captionCropPercent is how much of the frame survives -crop-captions: the top
+// 74%, centered horizontally, drops the caption band some avatar and lip-sync
+// models burn into the bottom of the frame.
+const captionCropPercent = 0.74
+
+// maybeCropCaptions crops each generated video file to the top 74% of the frame
+// when -crop-captions is set, re-encoding the video (crf 16) and copying the
+// audio. Like maybeStripAudio it skips cleanly without ffmpeg, logs either way,
+// and treats a failure as non-fatal: the generated video is preserved.
+func maybeCropCaptions(opts *cliOptions, videoCount int, paths []string, w io.Writer) {
+	if !opts.cropCaptions || videoCount == 0 {
+		return
+	}
+	color := curds.IsTerminalWriter(w)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		fmt.Fprint(w, curds.FormatLogLine("warn", "captions.crop_skipped",
+			[]any{"reason", "ffmpeg not found on PATH", "hint", "install ffmpeg or pass -crop-captions=false"}, color))
+		return
+	}
+	for _, p := range paths {
+		if strings.ToLower(filepath.Ext(p)) != ".mp4" {
+			continue
+		}
+		if err := cropCaptionsInPlace(ffmpeg, p); err != nil {
+			fmt.Fprint(w, curds.FormatLogLine("error", "captions.crop_failed",
+				[]any{"path", p, "err", err.Error()}, color))
+			continue
+		}
+		fmt.Fprint(w, curds.FormatLogLine("info", "captions.cropped", []any{"path", p}, color))
+	}
+}
+
+// cropCaptionsInPlace rewrites path as the top crop-captions fraction of the
+// frame, centered horizontally. Video is re-encoded (the geometry changes, so a
+// stream copy is impossible); audio is copied. It writes to a sibling temp file
+// and atomically renames over the original so a failure never corrupts the
+// result.
+func cropCaptionsInPlace(ffmpeg, path string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "curds-crop-*.mp4")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	// Dimensions are rounded to even numbers: h264 4:2:0 refuses an odd edge,
+	// and 74% of a typical frame width rarely lands on one.
+	filter := fmt.Sprintf(
+		"crop=trunc(iw*%v/2)*2:trunc(ih*%v/2)*2:(iw-trunc(iw*%v/2)*2)/2:0",
+		captionCropPercent, captionCropPercent, captionCropPercent,
+	)
+	cmd := exec.Command(ffmpeg, "-y", "-loglevel", "error", "-i", path,
+		"-vf", filter, "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-c:a", "copy", tmpName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("ffmpeg: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// validateMediaInputs enforces the media-input contract for the models whose
+// inputs are files rather than a prompt, so a missing one is a usage error
+// (exit 2) naming the flag instead of an upstream 400.
+func validateMediaInputs(model string, opts *cliOptions) error {
+	switch {
+	case curds.IsKlingAvatarModel(model):
+		if len(opts.inputImages) != 1 {
+			return fmt.Errorf("model %s requires exactly one -input-image portrait, got %d", model, len(opts.inputImages))
+		}
+		if strings.TrimSpace(opts.audio) == "" {
+			return fmt.Errorf("model %s requires -audio PATH (mp3, wav, m4a, or aac)", model)
+		}
+	case curds.IsLipsyncModel(model):
+		if strings.TrimSpace(opts.inputVideo) == "" {
+			return fmt.Errorf("model %s requires -input-video PATH (mp4)", model)
+		}
+		if strings.TrimSpace(opts.audio) == "" {
+			return fmt.Errorf("model %s requires -audio PATH (wav)", model)
+		}
 	}
 	return nil
 }

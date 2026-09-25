@@ -260,6 +260,12 @@ func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
 	if got := ResolveModel(cfg, "kling-v3", "replicate"); got != "kwaivgi/kling-v3-video" {
 		t.Errorf("backfilled kling-v3: %q", got)
 	}
+	if got := ResolveModel(cfg, "kling-avatar", "replicate"); got != "kwaivgi/kling-avatar-v2" {
+		t.Errorf("backfilled kling-avatar: %q", got)
+	}
+	if got := ResolveModel(cfg, "lipsync", "replicate"); got != "sync/lipsync-2-pro" {
+		t.Errorf("backfilled lipsync: %q", got)
+	}
 	if got := ResolveModel(cfg, "flux-2-pro", "replicate"); got != "black-forest-labs/flux-2-pro" {
 		t.Errorf("backfilled flux-2-pro: %q", got)
 	}

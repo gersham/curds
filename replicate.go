@@ -41,6 +41,10 @@ type replicatePrediction struct {
 	Error  any               `json:"error"`
 	Logs   string            `json:"logs"`
 	URLs   map[string]string `json:"urls"`
+
+	// raw is the last upstream JSON body for this prediction, kept verbatim so
+	// `curds run -json` can print what Replicate actually returned.
+	raw json.RawMessage
 }
 
 func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result, error) {
@@ -58,6 +62,17 @@ func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result
 		return nil, err
 	}
 
+	pred, err := p.runPrediction(ctx, req, input)
+	if err != nil {
+		return p.fallbackOnSeedanceFaceRejection(ctx, req, err)
+	}
+	return p.resultFromPrediction(ctx, req, pred)
+}
+
+// runPrediction creates one prediction and polls it to a terminal status,
+// returning it when it succeeded. A non-succeeded status comes back as an
+// error carrying the upstream failure text.
+func (p *ReplicateProvider) runPrediction(ctx context.Context, req *Request, input map[string]any) (*replicatePrediction, error) {
 	pred, err := p.createPrediction(ctx, req, input)
 	if err != nil {
 		return nil, err
@@ -72,7 +87,12 @@ func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result
 		logError(req, "replicate.failed", "id", pred.ID, "status", pred.Status, "msg", formatErr(pred.Error))
 		return nil, fmt.Errorf("prediction %s: %s", pred.Status, formatErr(pred.Error))
 	}
+	return pred, nil
+}
 
+// resultFromPrediction downloads a succeeded prediction's output, picking the
+// video or image path based on the model.
+func (p *ReplicateProvider) resultFromPrediction(ctx context.Context, req *Request, pred *replicatePrediction) (*Result, error) {
 	urls, err := extractOutputURLs(pred.Output)
 	if err != nil {
 		return nil, fmt.Errorf("parse output: %w", err)
@@ -84,6 +104,111 @@ func (p *ReplicateProvider) Generate(ctx context.Context, req *Request) (*Result
 		return p.downloadVideos(ctx, req, pred.ID, urls)
 	}
 	return p.downloadImages(ctx, req, pred.ID, urls)
+}
+
+// fallbackOnSeedanceFaceRejection retries a face-rejected Seedance prediction
+// once on Kling 3.0. Seedance refuses any input image containing a realistic
+// human face ("flagged as sensitive", E005) while Kling accepts the same
+// frames, so the fallback turns a hard failure into a render. Anything that is
+// not a face rejection, a request with no image input, or -no-fallback comes
+// back as the original error.
+func (p *ReplicateProvider) fallbackOnSeedanceFaceRejection(ctx context.Context, req *Request, predErr error) (*Result, error) {
+	if !IsSeedanceModel(req.Model) || !hasSeedanceImageInput(req) || !seedanceFaceRejected(predErr) {
+		return nil, predErr
+	}
+	if req.NoFallback {
+		logInfo(req, "model.fallback_disabled",
+			"from", req.Model, "reason", "seedance_rejected_face", "hint", "retry with -model kling-v3")
+		return nil, predErr
+	}
+	freq := klingFallbackRequest(req)
+	input, err := buildReplicateKlingVideoInput(freq)
+	if err != nil {
+		logError(req, "model.fallback_failed", "to", freq.Model, "err", err.Error())
+		return nil, predErr
+	}
+	logInfo(req, "model.fallback", "from", req.Model, "to", freq.Model, "reason", "seedance_rejected_face")
+	pred, err := p.runPrediction(ctx, freq, input)
+	if err != nil {
+		logError(req, "model.fallback_failed", "to", freq.Model, "err", err.Error())
+		return nil, predErr
+	}
+	return p.resultFromPrediction(ctx, freq, pred)
+}
+
+// seedanceFaceRejected reports whether a Seedance failure is Replicate's
+// content filter refusing a realistic human face (prediction error text
+// "flagged as sensitive (E005)").
+func seedanceFaceRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "e005") || strings.Contains(msg, "flagged as sensitive")
+}
+
+// hasSeedanceImageInput reports whether the request fed Seedance an image —
+// the inputs that trip the face filter.
+func hasSeedanceImageInput(r *Request) bool {
+	return len(r.InputImages) > 0 || r.LastFrameImage != "" || len(r.ReferenceImages) > 0
+}
+
+// klingFallbackRequest derives the Kling 3.0 request used for the fallback.
+// Only what Kling understands carries over: the prompt, the first image as
+// start_image, the last frame as end_image, a duration clamped into Kling's
+// 3-15s range, and a mapped resolution and aspect ratio.
+func klingFallbackRequest(req *Request) *Request {
+	out := *req
+	out.Model = KlingVideoModel
+	out.VideoResolution = klingFallbackResolution(req.VideoResolution)
+	out.AspectRatio = klingFallbackAspectRatio(req.AspectRatio)
+	out.VideoDuration = klingFallbackDuration(req.VideoDuration)
+	out.LastFrameImage = req.LastFrameImage
+	out.Seed = 0 // Kling has no seed
+	out.ReferenceImages = nil
+	out.ReferenceVideos = nil
+	out.ReferenceAudios = nil
+	out.InputImages = nil
+	if len(req.InputImages) > 0 {
+		out.InputImages = req.InputImages[:1]
+	}
+	return &out
+}
+
+// klingFallbackResolution maps Seedance's resolution vocabulary onto Kling's:
+// 480p and 720p become standard (720p), 1080p becomes pro, 4k stays 4k.
+func klingFallbackResolution(res string) string {
+	switch strings.ToLower(strings.TrimSpace(res)) {
+	case "480p", "720p":
+		return "720p"
+	case "4k":
+		return "4k"
+	}
+	// Seedance 1080p, or unset: Kling's own default mode is pro.
+	return "1080p"
+}
+
+// klingFallbackAspectRatio passes the ratio through when Kling supports it and
+// falls back to 16:9 (Kling's landscape default) otherwise.
+func klingFallbackAspectRatio(ratio string) string {
+	switch strings.TrimSpace(strings.ToLower(ratio)) {
+	case "16:9", "9:16", "1:1":
+		return ratio
+	}
+	return "16:9"
+}
+
+// klingFallbackDuration clamps a Seedance duration into Kling's 3-15s range.
+func klingFallbackDuration(seconds int) int {
+	switch {
+	case seconds == 0 || seconds == -1:
+		return 5 // Seedance's "intelligent"/default duration.
+	case seconds < 3:
+		return 3
+	case seconds > 15:
+		return 15
+	}
+	return seconds
 }
 
 func buildReplicateInput(req *Request) (map[string]any, error) {
@@ -245,6 +370,10 @@ func buildReplicateVideoInput(req *Request) (map[string]any, error) {
 		return buildReplicateMinimaxVideoInput(req)
 	case IsKlingVideoModel(req.Model):
 		return buildReplicateKlingVideoInput(req)
+	case IsKlingAvatarModel(req.Model):
+		return buildReplicateKlingAvatarInput(req)
+	case IsLipsyncModel(req.Model):
+		return buildReplicateLipsyncInput(req)
 	}
 	return buildReplicateSeedanceVideoInput(req)
 }
@@ -281,6 +410,56 @@ func buildReplicateKlingVideoInput(req *Request) (map[string]any, error) {
 			return nil, fmt.Errorf("prepare end image: %w", err)
 		}
 		input["end_image"] = urls[0]
+	}
+	return input, nil
+}
+
+// buildReplicateKlingAvatarInput builds the input for kwaivgi/kling-avatar-v2:
+// one portrait `image` plus one `audio` clip, with an optional prompt for
+// actions/emotion/camera. Resolution is expressed as the model's `mode` enum
+// via -video-resolution (720p = std, 1080p = pro).
+func buildReplicateKlingAvatarInput(req *Request) (map[string]any, error) {
+	images, err := encodeMediaAsDataURLs(req.InputImages[:1])
+	if err != nil {
+		return nil, fmt.Errorf("prepare portrait image: %w", err)
+	}
+	audios, err := encodeMediaAsDataURLs([]string{req.Audio})
+	if err != nil {
+		return nil, fmt.Errorf("prepare audio: %w", err)
+	}
+	input := map[string]any{
+		"image": images[0],
+		"audio": audios[0],
+		"mode":  KlingAvatarMode(req.VideoResolution),
+	}
+	if strings.TrimSpace(req.Prompt) != "" {
+		input["prompt"] = req.Prompt
+	}
+	return input, nil
+}
+
+// buildReplicateLipsyncInput builds the input for sync/lipsync-2-pro: a source
+// `video` and an `audio` clip, plus the optional sync_mode, temperature, and
+// active_speaker knobs. There is no prompt.
+func buildReplicateLipsyncInput(req *Request) (map[string]any, error) {
+	videos, err := encodeMediaAsDataURLs([]string{req.InputVideo})
+	if err != nil {
+		return nil, fmt.Errorf("prepare input video: %w", err)
+	}
+	audios, err := encodeMediaAsDataURLs([]string{req.Audio})
+	if err != nil {
+		return nil, fmt.Errorf("prepare audio: %w", err)
+	}
+	input := map[string]any{
+		"video":          videos[0],
+		"audio":          audios[0],
+		"active_speaker": req.ActiveSpeaker,
+	}
+	if mode := strings.ToLower(strings.TrimSpace(req.SyncMode)); mode != "" {
+		input["sync_mode"] = mode
+	}
+	if req.SyncTemperature >= 0 {
+		input["temperature"] = req.SyncTemperature
 	}
 	return input, nil
 }
@@ -491,6 +670,7 @@ func (p *ReplicateProvider) createPrediction(ctx context.Context, req *Request, 
 	if err := json.Unmarshal(rb, &pred); err != nil {
 		return nil, fmt.Errorf("decode prediction: %w (body=%s)", err, string(rb))
 	}
+	pred.raw = rb
 	return &pred, nil
 }
 
@@ -535,7 +715,14 @@ func (p *ReplicateProvider) fetchPrediction(ctx context.Context, req *Request, g
 	if err := json.Unmarshal(rb, &pred); err != nil {
 		return nil, err
 	}
+	pred.raw = rb
 	return &pred, nil
+}
+
+// Download fetches a rendered asset URL. The bearer token is attached only for
+// Replicate-controlled hosts, so a model's own CDN never sees it.
+func (p *ReplicateProvider) Download(ctx context.Context, token, rawURL string) ([]byte, error) {
+	return p.downloadBytes(ctx, token, rawURL)
 }
 
 func (p *ReplicateProvider) downloadBytes(ctx context.Context, token, rawURL string) ([]byte, error) {

@@ -32,9 +32,11 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   video omit `-provider`/`-model`; curds defaults to Replicate
   `bytedance/seedance-2.0`. Use `-model` for the Replicate alternatives —
   `flux-2-pro` / `nano-banana-2` (images), `kling-v3` / `minimax-h3` (video),
-  `remove-bg`, `upscale`, `upscale-pro` — when the user asks for them or
-  OpenAI access is missing. Do not pair `-provider` with a model that
-  provider does not run; curds rejects the pair locally.
+  `remove-bg`, `upscale`, `upscale-pro`, plus the talking-head pair
+  `kling-avatar` (one portrait + `-audio`) and `lipsync` (`-input-video` +
+  `-audio`) — when the user asks for them or OpenAI access is missing. Do not
+  pair `-provider` with a model that provider does not run; curds rejects the
+  pair locally.
 
 ## Commands
 
@@ -60,6 +62,14 @@ curds -no-tui -provider replicate -model upscale -input-image small.jpg -scale 4
 
 # Better upscale for faces and text (Topaz; -scale 2, 4, or 6)
 curds -no-tui -model upscale-pro -input-image small.jpg -scale 4 -output big.png
+
+# Talking head / lip-sync (only when asked; audio is kept, never stripped)
+curds -no-tui -model kling-avatar -input-image portrait.png -audio voice.mp3 -output "$OUT.mp4"
+curds -no-tui -model lipsync -input-video clip.mp4 -audio voice.wav -sync-mode loop -output "$OUT.mp4"
+
+# Any other Replicate model, raw inputs (see `curds run -h`; -schema lists inputs)
+curds run -schema OWNER/MODEL
+curds run -output "$OUT" OWNER/MODEL prompt="text" duration=5 ref=@a.png
 ```
 
 ## Verify and report

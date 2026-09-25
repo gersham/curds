@@ -88,6 +88,10 @@ func TestCheckProviderModel(t *testing.T) {
 			{ProviderReplicate, "flux-2-pro"},
 			{ProviderReplicate, "black-forest-labs/flux-2-pro"},
 			{ProviderReplicate, "black-forest-labs/flux-2-pro:abc"},
+			{ProviderReplicate, "kling-avatar"},
+			{ProviderReplicate, "kwaivgi/kling-avatar-v2"},
+			{ProviderReplicate, "lipsync"},
+			{ProviderReplicate, "sync/lipsync-2-pro:abc"},
 			{ProviderReplicate, "some-owner/custom-model"},
 		}
 		for _, pair := range pairs {

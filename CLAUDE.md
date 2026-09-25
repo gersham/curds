@@ -8,9 +8,13 @@ project-local context. Keep it short and load-bearing.
 A Go CLI + library for generating images via OpenAI's gpt-image-2.5 (direct;
 Flare default, Sunburst via `-model gpt-image-2.5-sunburst`),
 plus images/videos via Replicate-hosted models (FLUX.2 [pro], Nano Banana 2,
-Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), plus background
+Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), talking heads and
+lip-sync via `kwaivgi/kling-avatar-v2` and `sync/lipsync-2-pro`, plus background
 removal via `bria/remove-background` (segmentation), plus image upscaling via
 `nightmareai/real-esrgan` and `topazlabs/image-upscale` (super-resolution).
+`curds run OWNER/MODEL key=value …` is a raw Replicate passthrough (`run.go` in
+the library, `cmd/curds/run.go` in the CLI); it shares `ReplicateProvider`'s
+prediction lifecycle (`runPrediction`) but does no field mapping.
 Module path: `github.com/gersham/curds`.
 
 ## Layout
@@ -18,9 +22,12 @@ Module path: `github.com/gersham/curds`.
 ```
 .
 ├── cmd/curds/main.go      package main — CLI flag parsing, TUI dispatch, output
+├── cmd/curds/run.go       package main — the `curds run` subcommand
 ├── client.go              package curds — Client, Request, Result, types
 ├── openai.go              package curds — OpenAI Image API provider
-├── replicate.go           package curds — Replicate API provider
+├── replicate.go           package curds — Replicate API provider (incl. the
+│                          Seedance→Kling face-rejection fallback)
+├── run.go                 package curds — raw passthrough Run/Schema/input parsing
 ├── log.go                 package curds — shared logfmt + lipgloss formatter
 ├── curds_test.go          package curds — unit + httptest tests
 ├── config/                package config — TOML loader, .env, token resolution
@@ -75,6 +82,16 @@ file; if you add a provider, model, or flag that changes the happy path, update
   `reference_image_urls`/`_video_`/`_audio_`, `ratio`) and its own enums —
   resolution `768P`/`2K` (mapped from `768p`/`2k` by `MinimaxVideoResolution`),
   ratio with `adaptive` and no `auto`, duration 4-15s. No seed, no audio toggle.
+  Talking heads: `kling-avatar` (`kwaivgi/kling-avatar-v2`) sends exactly one
+  `image` + `audio` + `mode` (720p/std, 1080p/pro; default pro) and omits an
+  empty prompt; `lipsync` (`sync/lipsync-2-pro`) sends `video` + `audio` +
+  `active_speaker` + optional `sync_mode`/`temperature` and takes no prompt.
+  `IsPromptlessModel` is what exempts segmentation/upscale/lipsync/kling-avatar
+  from the "prompt is required" check — extend it, not the call sites.
+  `Request.Audio`/`InputVideo`/`SyncMode`/`SyncTemperature` carry their flags;
+  `-strip-audio` defaults off for both models and `maybeCropCaptions` handles
+  `-crop-captions`. Seedance failures mentioning E005/"flagged as sensitive"
+  retry once on Kling 3.0 (`fallbackOnSeedanceFaceRejection`, `-no-fallback`).
   For Grok Imagine Video, exactly one `InputImages` entry is sent as `image`.
   For Seedance, one `InputImages` entry is sent as `image` (first frame);
   multiple `InputImages` entries are sent as `reference_images`.
@@ -93,6 +110,11 @@ file; if you add a provider, model, or flag that changes the happy path, update
   When a model can only emit one format (segmentation, upscale, Nano Banana),
   `applyModelOutputDefaults` also retargets an explicit `-output` extension
   rather than writing PNG bytes into a `.webp` name.
+- **`curds run`** is a subcommand, dispatched from `realMain` before flag
+  parsing. Inputs are `key=value` (`ParseRunInput`): `@path` uploads a file as
+  a data URL, everything else is JSON when it parses and a string otherwise;
+  repeating a key builds an array. `-schema` prints the model document's
+  `Input` properties (enums resolve through `allOf`/`$ref`).
 - **No emojis, no chatty trailing summaries** in user-facing CLI output. Logs
   are the audit trail; stdout is just the saved file path(s).
 - **One canonical name per flag.** No `-p`/`-prompt` aliases. Long forms

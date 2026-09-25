@@ -2708,7 +2708,7 @@ func TestSeedanceFaceRejectionFallsBackToKling(t *testing.T) {
 		if _, ok := got["reference_images"]; ok {
 			t.Errorf("kling has no reference_images: %#v", got)
 		}
-		for _, want := range []string{"event=model.fallback", "reason=\"seedance_rejected_face\""} {
+		for _, want := range []string{"event=model.fallback", "reason=seedance_rejected_face"} {
 			if !strings.Contains(logs.String(), want) {
 				t.Errorf("logs missing %q:\n%s", want, logs.String())
 			}

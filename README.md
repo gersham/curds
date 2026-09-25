@@ -5,8 +5,10 @@
 ![curds in action](docs/curds-preview.png)
 
 Generate images from the command line via OpenAI's gpt-image-2.5 (direct, the
-default), or images/videos via Replicate-hosted models such as Grok Imagine
-Video 1.5, Seedance 2.0, Kling 3.0, and the talking-head pair Kling Avatar 2.0
+default), or images/videos/music/audio via Replicate-hosted models such as Grok
+Imagine Video 1.5, Seedance 2.0, Kling 3.0, ElevenLabs Music (`-model music`),
+MiniMax Music 2.6 (`-model music-vocal`), Stable Audio 2.5 (`-model sfx`) for
+sound effects, and the talking-head pair Kling Avatar 2.0
 (`-model kling-avatar`) and Sync Labs lipsync-2-pro (`-model lipsync`). Also
 wraps Replicate's `bria/remove-background`
 for one-shot transparent-PNG cutouts (`-model remove-bg`) and
@@ -388,6 +390,59 @@ through when Kling supports it (else 16:9). The retry is logged as
 Pass `-no-fallback` to disable it; curds then returns the original error and
 logs `hint="retry with -model kling-v3"`.
 
+## Music and sound effects
+
+Three Replicate audio models are wired in, all prompt-driven, saving `mp3` or
+`wav`:
+
+- `music` — **ElevenLabs Music** (`elevenlabs/music`), the default music model.
+  A score, cue, or loop from `-prompt`, instrumental by default
+  (`-instrumental=false` for vocals), and it honors the requested length
+  exactly: `-duration` 5–300s (default 10) goes upstream as `music_length_ms`.
+- `music-vocal` — **MiniMax Music 2.6** (`minimax/music-2.6`, alias
+  `minimax-music`). A full song with vocals. `-prompt` sets the style;
+  `-lyrics TEXT` or `-lyrics @song.txt` supplies the words (newlines and
+  `[Verse]`/`[Chorus]` tags pass through), and `-lyrics` also works with no
+  `-prompt`. Without lyrics the model writes them from the prompt.
+- `sfx` — **Stable Audio 2.5** (`stability-ai/stable-audio-2.5`). Sound
+  effects, ambience, and short music cues, 1–190s (`-duration`, default 10),
+  with an optional `-seed`.
+
+```bash
+# Score: a 45-second instrumental cue with an exact length
+curds -model music -duration 45 \
+      -prompt "tense minimal synth score, slow build, no drums" -output /tmp/score.mp3
+
+# Song with lyrics read from a file
+curds -model music-vocal -lyrics @song.txt -duration 60 \
+      -prompt "warm indie-folk duet, acoustic guitar and brushed drums" -output /tmp/song.mp3
+
+# 8-second ambience sound effect
+curds -model sfx -duration 8 \
+      -prompt "steady heavy rain on a tin roof, distant thunder" -output /tmp/rain.wav
+```
+
+Notes:
+
+- `-output-format` is `mp3` by default for audio, or `wav` when `-output`
+  ends in `.wav`. An `mp3`/`wav` output without an audio `-model` is rejected
+  locally.
+- MiniMax Music 2.6 ignores the requested length upstream (it renders 2–3
+  minutes), so when `-duration` is set curds trims the downloaded render with
+  a 2s fade-out via ffmpeg (`event=audio.trimmed`). Without ffmpeg it logs
+  `audio.trim_skipped` and keeps the full render.
+- Stable Audio 2.5 picks its own container. When it differs from the requested
+  one, curds transcodes via ffmpeg if available, and otherwise saves the
+  container that came back under its own extension with an
+  `audio.format_mismatch` warning.
+- `-lyrics` is music-vocal only; anywhere else it is a usage error.
+  `-aspect-ratio`, `-size`, `-quality`, `-background`, and `-moderation` are
+  not sent to audio models.
+- `-seed` is supported by `sfx` only.
+
+For any other audio model on Replicate, use the raw passthrough:
+`curds run OWNER/MODEL key=value …` (see below).
+
 ## Raw Replicate passthrough (`curds run`)
 
 `curds run` creates one prediction on any Replicate model with exactly the
@@ -631,6 +686,8 @@ Run `curds -h` for the full list. Highlights:
 - `-no-fallback` — disable the Seedance → Kling 3.0 face-rejection retry
 - `curds run OWNER/MODEL key=value …` — raw Replicate passthrough (`-schema`, `-json`)
 - `-reference-image` / `-reference-video` / `-reference-audio` — Seedance references
+- `-duration` / `-instrumental` / `-lyrics` — audio controls (`-model music`,
+  `music-vocal`, `sfx`); `-lyrics` reads `@file.txt`
 - `-scale` / `-face-enhance` — upscale factor and face restoration (`-model upscale`)
 - `-provider`, `-token`, `-model`
 - `-open` — open generated assets in OS viewer (macOS Preview)

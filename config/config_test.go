@@ -281,6 +281,17 @@ func TestApplyZeroDefaultsBackfillsBuiltinModels(t *testing.T) {
 	if got := ResolveModel(cfg, "upscale", "replicate"); got != "nightmareai/real-esrgan" {
 		t.Errorf("backfilled upscale: %q", got)
 	}
+	if got := ResolveModel(cfg, "music", "replicate"); got != "elevenlabs/music" {
+		t.Errorf("backfilled music: %q", got)
+	}
+	for _, key := range []string{"music-vocal", "minimax-music"} {
+		if got := ResolveModel(cfg, key, "replicate"); got != "minimax/music-2.6" {
+			t.Errorf("backfilled %s: %q", key, got)
+		}
+	}
+	if got := ResolveModel(cfg, "sfx", "replicate"); got != "stability-ai/stable-audio-2.5" {
+		t.Errorf("backfilled sfx: %q", got)
+	}
 	// User entries win over the builtin table.
 	if got := ResolveModel(cfg, "gpt-image-2", "openai"); got != "custom-user-value" {
 		t.Errorf("user override lost: %q", got)
@@ -321,6 +332,17 @@ func TestDefaultTOMLParses(t *testing.T) {
 	}
 	if cfg.Models["upscale"].ReplicateName != "nightmareai/real-esrgan" {
 		t.Errorf("upscale model not parsed: %+v", cfg.Models["upscale"])
+	}
+	for _, section := range []string{"[models.music]", "[models.music-vocal]", "[models.sfx]"} {
+		if !strings.Contains(DefaultTOML, section) {
+			t.Errorf("default TOML missing %s", section)
+		}
+	}
+	if cfg.Models["music"].ReplicateName != "elevenlabs/music" {
+		t.Errorf("music model not parsed: %+v", cfg.Models["music"])
+	}
+	if cfg.Models["minimax-music"].ReplicateName != "minimax/music-2.6" {
+		t.Errorf("minimax-music alias not parsed: %+v", cfg.Models["minimax-music"])
 	}
 	if cfg.Output.Directory == "" {
 		t.Errorf("output directory missing after parse")

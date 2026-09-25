@@ -82,6 +82,27 @@ const (
 	// video and audio are the whole input. Selectable via -model lipsync.
 	LipsyncModel = "sync/lipsync-2-pro"
 
+	// MusicModel is ElevenLabs Music on Replicate and the default music model:
+	// a score or loop from a prompt, instrumental by default, in mp3 or wav,
+	// honoring the requested length exactly. Selectable via -model music.
+	MusicModel = "elevenlabs/music"
+
+	// MusicVocalModel is MiniMax Music 2.6 on Replicate: a full song (vocals or
+	// instrumental) from a prompt, optionally with caller-supplied -lyrics and
+	// [Verse]/[Chorus] tags. It ignores the requested length upstream (renders
+	// are 2-3 minutes) so curds trims the result locally when -duration is set.
+	// Selectable via -model music-vocal (alias -model minimax-music).
+	MusicVocalModel = "minimax/music-2.6"
+
+	// SFXModel is Stable Audio 2.5 on Replicate: sound effects, ambience, and
+	// short music cues from a prompt, 1-190 seconds, with an optional seed.
+	// Selectable via -model sfx.
+	SFXModel = "stability-ai/stable-audio-2.5"
+
+	// DefaultSFXDuration is the length curds asks Stable Audio for when
+	// -duration is omitted, in seconds.
+	DefaultSFXDuration = 10
+
 	// FluxImageModel is FLUX.2 [pro] on Replicate: fast, cheap image generation
 	// with reference-image control. Uses megapixel resolutions, not sizes.
 	FluxImageModel = "black-forest-labs/flux-2-pro"
@@ -174,6 +195,20 @@ type Request struct {
 	GenerateAudio     *bool   // nil = provider default
 	Seed              int     // 0 = provider random seed
 	Scale             float64 // upscale factor for super-resolution models; 0 = model default
+	// Duration is the requested length in seconds for audio models. music maps
+	// it onto music_length_ms (5-300), sfx onto its integer duration (1-190,
+	// default 10), and music-vocal ignores it upstream — curds trims the
+	// render locally instead. 0 = model default.
+	Duration float64
+	// Instrumental requests an instrumental track (no vocals) from the music
+	// models. nil = model default: true for -model music (ElevenLabs Music is
+	// instrumental-first) and false for -model music-vocal. Non-empty Lyrics
+	// force it false, because lyrics imply vocals. Ignored by -model sfx.
+	Instrumental *bool
+	// Lyrics is the song text for minimax/music-2.6 (-lyrics TEXT or
+	// -lyrics @file.txt); [Verse]/[Chorus] tags and newlines pass through.
+	// Only -model music-vocal accepts it.
+	Lyrics string
 	// Audio is the audio track for talking-head models (kling-avatar,
 	// lipsync): a file path, http(s) URL, or data URL.
 	Audio string
@@ -214,10 +249,20 @@ type Video struct {
 	URL    string
 }
 
+// Audio is one rendered audio asset. Format is the container the provider
+// actually returned (mp3 or wav), which for a model that ignores the container
+// request can differ from Request.OutputFormat.
+type Audio struct {
+	Bytes  []byte
+	Format string
+	URL    string
+}
+
 // Result groups all assets produced by a Request.
 type Result struct {
 	Images []Image
 	Videos []Video
+	Audios []Audio
 }
 
 // Provider is the contract every backend implements.
@@ -289,6 +334,8 @@ func (r *Request) applyDefaults() {
 	}
 	if r.AspectRatio == "" && r.Size == "" {
 		switch {
+		case IsAudioModel(r.Model):
+			// Audio models take no aspect ratio: the model decides the mix.
 		case IsGrokImagineVideoModel(r.Model), IsXaiVideoModel(r.Model):
 			r.AspectRatio = "auto"
 		case IsMinimaxVideoModel(r.Model), IsKlingVideoModel(r.Model):
@@ -305,6 +352,8 @@ func (r *Request) applyDefaults() {
 		switch {
 		case IsVideoModel(r.Model):
 			r.OutputFormat = "mp4"
+		case IsAudioModel(r.Model):
+			r.OutputFormat = "mp3"
 		case IsSegmentationModel(r.Model), IsUpscaleModel(r.Model):
 			r.OutputFormat = "png"
 		case IsNanoBananaImageModel(r.Model):
@@ -327,6 +376,27 @@ func (r *Request) applyDefaults() {
 			r.VideoResolution = "1080p"
 		default:
 			r.VideoResolution = "720p"
+		}
+	}
+	if IsAudioModel(r.Model) {
+		// Stable Audio's own default length (10s) is what curds asks for when
+		// -duration is omitted; the music models default upstream.
+		if IsSFXModel(r.Model) && r.Duration == 0 {
+			r.Duration = DefaultSFXDuration
+		}
+		// Lyrics imply vocals, so they override -instrumental. Otherwise fill
+		// in the model's own default: instrumental for ElevenLabs Music,
+		// vocal for MiniMax Music 2.6.
+		switch {
+		case strings.TrimSpace(r.Lyrics) != "":
+			instrumental := false
+			r.Instrumental = &instrumental
+		case r.Instrumental == nil && IsMusicModel(r.Model):
+			instrumental := true
+			r.Instrumental = &instrumental
+		case r.Instrumental == nil && IsMusicVocalModel(r.Model):
+			instrumental := false
+			r.Instrumental = &instrumental
 		}
 	}
 	if r.Background == "" {
@@ -356,7 +426,9 @@ func (r *Request) Validate() error {
 	if r.Token == "" {
 		return fmt.Errorf("missing %s token", r.Provider)
 	}
-	if !IsPromptlessModel(r.Model) && strings.TrimSpace(r.Prompt) == "" {
+	// MiniMax Music 2.6 can also be driven by -lyrics alone (lyrics imply
+	// vocals), so it is the one prompt-required model with an alternative.
+	if !IsPromptlessModel(r.Model) && strings.TrimSpace(r.Prompt) == "" && !r.lyricsOnlyMusic() {
 		return errors.New("prompt is required")
 	}
 	if r.NumImages < 1 || r.NumImages > 10 {
@@ -371,6 +443,10 @@ func (r *Request) Validate() error {
 	switch {
 	case IsVideoModel(r.Model):
 		if err := r.validateVideo(); err != nil {
+			return err
+		}
+	case IsAudioModel(r.Model):
+		if err := r.validateAudio(); err != nil {
 			return err
 		}
 	case IsSegmentationModel(r.Model):
@@ -398,7 +474,8 @@ func (r *Request) Validate() error {
 	}
 	// The gpt-image-2 wrapper on Replicate is the only model with the narrow
 	// 1:1/3:2/2:3 ratio list; models with their own ratio enums validate above.
-	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsSegmentationModel(r.Model) &&
+	if r.Provider == ProviderReplicate && !IsVideoModel(r.Model) && !IsAudioModel(r.Model) &&
+		!IsSegmentationModel(r.Model) &&
 		!IsUpscaleModel(r.Model) && !IsFluxImageModel(r.Model) && !IsNanoBananaImageModel(r.Model) &&
 		r.AspectRatio != "" && !ReplicateAllowedAspectRatios[r.AspectRatio] {
 		return fmt.Errorf("replicate only supports 1:1, 3:2, 2:3 aspect ratios; got %q", r.AspectRatio)
@@ -470,6 +547,73 @@ func (r *Request) validateVideo() error {
 	default:
 		return fmt.Errorf("unsupported video model %q", r.Model)
 	}
+}
+
+// AudioAllowedFormats are the containers the audio models can emit, and the
+// values -output-format accepts for them.
+var AudioAllowedFormats = map[string]bool{"mp3": true, "wav": true}
+
+// lyricsOnlyMusic reports whether the request is a minimax/music-2.6 song
+// driven by -lyrics alone. Lyrics imply vocals, so the prompt requirement is
+// satisfied upstream by the lyrics themselves. Only that one model qualifies.
+func (r *Request) lyricsOnlyMusic() bool {
+	return IsMusicVocalModel(r.Model) && strings.TrimSpace(r.Lyrics) != ""
+}
+
+// validateAudio checks a request for the audio models (ElevenLabs Music,
+// MiniMax Music 2.6, Stable Audio 2.5). They are prompt-in/audio-out on
+// Replicate: no input media, no pixel size, no aspect ratio, one file per
+// request. Each accepts its own duration range, and -lyrics belongs to
+// music-vocal alone.
+func (r *Request) validateAudio() error {
+	if r.Provider != ProviderReplicate {
+		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	}
+	if r.NumImages != 1 {
+		return fmt.Errorf("audio generation produces exactly one file, got num_images=%d", r.NumImages)
+	}
+	if !AudioAllowedFormats[r.OutputFormat] {
+		return fmt.Errorf("audio output_format must be mp3 or wav, got %q", r.OutputFormat)
+	}
+	if r.Size != "" {
+		return errors.New("audio generation has no pixel size; -size is image-only")
+	}
+	if r.Mask != "" {
+		return errors.New("audio generation does not accept -mask")
+	}
+	if len(r.InputImages) > 0 || r.LastFrameImage != "" || r.InputVideo != "" ||
+		len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
+		return errors.New("audio generation takes no input media (only -prompt, plus -lyrics for -model music-vocal)")
+	}
+	switch {
+	case IsMusicModel(r.Model):
+		if strings.TrimSpace(r.Lyrics) != "" {
+			return errors.New("-lyrics is only supported by -model music-vocal (ElevenLabs Music renders instrumentals)")
+		}
+		if r.Duration != 0 && (r.Duration < 5 || r.Duration > 300) {
+			return fmt.Errorf("duration must be 5-300 seconds for ElevenLabs Music, got %g", r.Duration)
+		}
+	case IsMusicVocalModel(r.Model):
+		if strings.TrimSpace(r.Prompt) == "" && strings.TrimSpace(r.Lyrics) == "" {
+			return errors.New("MiniMax Music 2.6 needs -prompt, or -lyrics with -instrumental=false")
+		}
+		if r.Duration != 0 && r.Duration < 1 {
+			return fmt.Errorf("duration must be at least 1 second for MiniMax Music 2.6, got %g", r.Duration)
+		}
+	case IsSFXModel(r.Model):
+		if strings.TrimSpace(r.Lyrics) != "" {
+			return errors.New("-lyrics is only supported by -model music-vocal")
+		}
+		if r.Duration != 0 && (r.Duration < 1 || r.Duration > 190) {
+			return fmt.Errorf("duration must be 1-190 seconds for Stable Audio 2.5, got %g", r.Duration)
+		}
+	default:
+		return fmt.Errorf("unsupported audio model %q", r.Model)
+	}
+	if r.Seed != 0 && !IsSFXModel(r.Model) {
+		return errors.New("this audio model has no seed input; -seed is supported by -model sfx only")
+	}
+	return nil
 }
 
 // validateXaiVideo checks a request for xAI's native Grok Imagine Video API.
@@ -1028,6 +1172,34 @@ func IsNanoBananaImageModel(model string) bool {
 // Labs' image upscaler.
 func IsTopazUpscaleModel(model string) bool {
 	return matchesReplicateModel(model, TopazUpscaleModel)
+}
+
+// IsMusicModel reports whether the resolved provider model is ElevenLabs Music
+// (elevenlabs/music), the default music model: prompt-in, instrumental by
+// default, exact requested length.
+func IsMusicModel(model string) bool {
+	return matchesReplicateModel(model, MusicModel)
+}
+
+// IsMusicVocalModel reports whether the resolved provider model is MiniMax
+// Music 2.6 (minimax/music-2.6): a full song, with vocals by default, from a
+// prompt and/or -lyrics.
+func IsMusicVocalModel(model string) bool {
+	return matchesReplicateModel(model, MusicVocalModel)
+}
+
+// IsSFXModel reports whether the resolved provider model is Stable Audio 2.5
+// (stability-ai/stable-audio-2.5): sound effects, ambience, and short cues.
+func IsSFXModel(model string) bool {
+	return matchesReplicateModel(model, SFXModel)
+}
+
+// IsAudioModel reports whether the resolved provider model produces audio
+// rather than an image or a video. Audio models are prompt-driven but run
+// under their own validation and request-building path: no input media, no
+// aspect ratio, no pixel size, and an mp3/wav output container.
+func IsAudioModel(model string) bool {
+	return IsMusicModel(model) || IsMusicVocalModel(model) || IsSFXModel(model)
 }
 
 // matchesReplicateModel reports whether model is base, optionally with a

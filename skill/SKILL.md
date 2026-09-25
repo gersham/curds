@@ -1,6 +1,6 @@
 ---
 name: curds
-description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, remove image backgrounds, or upscale images through OpenAI or Replicate.
+description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, generate music or sound effects, remove image backgrounds, or upscale images through OpenAI or Replicate.
 model: haiku
 ---
 
@@ -15,9 +15,9 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
 - Readiness: `command -v curds`. If missing, stop and report; do not install.
 - Always pass `-no-tui` and an explicit `-output` path. Use `-open` only when
   asked.
-- One image per request unless variants are asked for. Never start video jobs,
-  variant batches, or high-quality batches unless requested or clearly
-  appropriate.
+- One image per request unless variants are asked for. Never start video,
+  music, or sound-effect jobs, variant batches, or high-quality batches unless
+  requested or clearly appropriate.
 - Never print, paste, commit, or summarize API tokens. Auth resolves from
   `~/.config/curds/config.toml` (or `$CURDS_CONFIG`), `.env`, or
   `OPENAI_API_KEY`/`REPLICATE_API_TOKEN`; only pass `-token` when the user
@@ -37,6 +37,12 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   `-audio`) — when the user asks for them or OpenAI access is missing. Do not
   pair `-provider` with a model that provider does not run; curds rejects the
   pair locally.
+- Audio: `-model music` (ElevenLabs Music, instrumental score by default,
+  exact `-duration`), `-model music-vocal` (MiniMax Music 2.6, songs; add
+  `-lyrics`), `-model sfx` (Stable Audio 2.5, sound effects and ambience).
+  Audio output is `mp3`, or `wav` when `-output` ends in `.wav`; an audio
+  format without an audio model is rejected. Audio models are Replicate-only
+  and need a prompt (`music-vocal` also accepts lyrics alone).
 
 ## Commands
 
@@ -53,6 +59,11 @@ curds -no-tui -input-image still.webp -prompt "$PROMPT" -aspect-ratio 16:9 -vide
 # Cheap/fast image alternative (FLUX.2 [pro]) or 4K composite (Nano Banana 2)
 curds -no-tui -model flux-2-pro -aspect-ratio 16:9 -image-resolution 2mp -prompt "$PROMPT" -output "$OUT.png"
 curds -no-tui -model nano-banana-2 -image-resolution 4k -input-image a.png,b.png -prompt "$PROMPT" -output "$OUT.png"
+
+# Music / sound effects (mp3 by default; .wav when -output ends .wav)
+curds -no-tui -model music -duration 45 -prompt "$PROMPT" -output "$OUT.mp3"
+curds -no-tui -model music-vocal -lyrics @song.txt -prompt "$PROMPT" -output "$OUT.mp3"
+curds -no-tui -model sfx -duration 8 -prompt "$PROMPT" -output "$OUT.wav"
 
 # Background removal (transparent PNG cutout)
 curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
@@ -78,15 +89,16 @@ curds run -output "$OUT" OWNER/MODEL prompt="text" duration=5 ref=@a.png
 test -s "$OUT" && file "$OUT" && ls -lh "$OUT"
 ```
 
-Plus `sips -g pixelWidth -g pixelHeight "$OUT"` for images or `ffprobe "$OUT"`
-for videos when available. Report the provider, model, sanitized command shape,
-absolute output path, and verification result — never tokens. Exit code `2` =
-bad flags or missing input; `1` = upstream/generation failure or cancellation.
-Report the exact blocker instead of retrying interactively.
+Plus `sips -g pixelWidth -g pixelHeight "$OUT"` for images, `ffprobe "$OUT"`
+for videos and audio, when available. Report the provider, model, sanitized
+command shape, absolute output path, and verification result — never tokens.
+Exit code `2` = bad flags or missing input; `1` = upstream/generation failure or
+cancellation. Report the exact blocker instead of retrying interactively.
 
 ## Non-default parameters
 
 Only when the request needs something beyond the commands above — custom
 `-size`, 4K aspect ratios, masks/inpainting, output formats and compression,
-Grok/Seedance duration-resolution-aspect matrices, Seedance-only flags — read
-`reference.md` in this skill directory.
+Grok/Seedance duration-resolution-aspect matrices, Seedance-only flags,
+`-instrumental` / `-lyrics` / audio containers, the music-vocal local trim —
+read `reference.md` in this skill directory.

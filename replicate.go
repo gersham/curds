@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -99,6 +101,9 @@ func (p *ReplicateProvider) resultFromPrediction(ctx context.Context, req *Reque
 	}
 	if len(urls) == 0 {
 		return nil, errors.New("prediction succeeded but produced no output URLs")
+	}
+	if IsAudioModel(req.Model) {
+		return p.downloadAudios(ctx, req, pred.ID, urls)
 	}
 	if IsVideoModel(req.Model) {
 		return p.downloadVideos(ctx, req, pred.ID, urls)
@@ -214,6 +219,9 @@ func klingFallbackDuration(seconds int) int {
 func buildReplicateInput(req *Request) (map[string]any, error) {
 	if IsVideoModel(req.Model) {
 		return buildReplicateVideoInput(req)
+	}
+	if IsAudioModel(req.Model) {
+		return buildReplicateAudioInput(req)
 	}
 	if IsSegmentationModel(req.Model) {
 		return buildReplicateSegmentationInput(req)
@@ -360,6 +368,98 @@ func buildReplicateUpscaleInput(req *Request) (map[string]any, error) {
 		input["face_enhance"] = true
 	}
 	return input, nil
+}
+
+// buildReplicateAudioInput builds the input for whichever audio model curds
+// wraps: ElevenLabs Music (score), MiniMax Music 2.6 (song), or Stable Audio
+// 2.5 (sound effects). Each names its length and container differently, so the
+// per-model builders below do the mapping.
+func buildReplicateAudioInput(req *Request) (map[string]any, error) {
+	switch {
+	case IsMusicModel(req.Model):
+		return buildReplicateMusicInput(req), nil
+	case IsMusicVocalModel(req.Model):
+		return buildReplicateMusicVocalInput(req), nil
+	case IsSFXModel(req.Model):
+		return buildReplicateSFXInput(req), nil
+	}
+	return nil, fmt.Errorf("unsupported audio model %q", req.Model)
+}
+
+// elevenLabsMusicFormat maps curds' mp3/wav onto elevenlabs/music's
+// output_format enum. The high-fidelity entry wins for each container: MP3
+// high quality, or CD-quality WAV (44.1 kHz, 16-bit).
+func elevenLabsMusicFormat(format string) string {
+	if format == "wav" {
+		return "wav_cd_quality"
+	}
+	return "mp3_high_quality"
+}
+
+// instrumentalValue reads Request.Instrumental, falling back to the model's
+// own default when the caller left it unset (applyDefaults normally fills it).
+func instrumentalValue(req *Request, fallback bool) bool {
+	if req.Instrumental != nil {
+		return *req.Instrumental
+	}
+	return fallback
+}
+
+// buildReplicateMusicInput builds the input for elevenlabs/music: the prompt,
+// an exact music_length_ms (5-300s), force_instrumental (default true), and
+// the output_format enum. The model honors the requested length exactly.
+func buildReplicateMusicInput(req *Request) map[string]any {
+	input := map[string]any{
+		"prompt":             req.Prompt,
+		"force_instrumental": instrumentalValue(req, true),
+		"output_format":      elevenLabsMusicFormat(req.OutputFormat),
+	}
+	if req.Duration > 0 {
+		input["music_length_ms"] = int(math.Round(req.Duration * 1000))
+	}
+	return input
+}
+
+// buildReplicateMusicVocalInput builds the input for minimax/music-2.6: the
+// prompt, is_instrumental (default false — vocals), lyrics when supplied, and
+// CD-grade mp3/wav output (44.1 kHz, 256 kbps). With no lyrics on a vocal
+// track the model's own lyrics_optimizer writes them from the prompt. The
+// requested length is NOT sent: the model renders 2-3 minutes and curds trims
+// locally instead (see the CLI's -duration handling).
+func buildReplicateMusicVocalInput(req *Request) map[string]any {
+	instrumental := instrumentalValue(req, false)
+	input := map[string]any{
+		"prompt":          req.Prompt,
+		"is_instrumental": instrumental,
+		"audio_format":    req.OutputFormat,
+		"sample_rate":     44100,
+		"bitrate":         256000,
+	}
+	if strings.TrimSpace(req.Lyrics) != "" {
+		input["lyrics"] = req.Lyrics
+	} else if !instrumental {
+		input["lyrics_optimizer"] = true
+	}
+	return input
+}
+
+// buildReplicateSFXInput builds the input for stability-ai/stable-audio-2.5:
+// the prompt, an integer duration in seconds, and an optional seed. It ignores
+// the container request — the model returns what it returns — so the CLI
+// reconciles the extension after download.
+func buildReplicateSFXInput(req *Request) map[string]any {
+	duration := int(math.Round(req.Duration))
+	if duration <= 0 {
+		duration = DefaultSFXDuration
+	}
+	input := map[string]any{
+		"prompt":   req.Prompt,
+		"duration": duration,
+	}
+	if req.Seed != 0 {
+		input["seed"] = req.Seed
+	}
+	return input
 }
 
 func buildReplicateVideoInput(req *Request) (map[string]any, error) {
@@ -598,6 +698,37 @@ func buildReplicateSeedanceVideoInput(req *Request) (map[string]any, error) {
 		input["reference_audios"] = urls
 	}
 	return input, nil
+}
+
+// downloadAudios downloads each rendered audio file. The container is taken
+// from the output URL when it names one (some models ignore the requested
+// format), falling back to the requested output format.
+func (p *ReplicateProvider) downloadAudios(ctx context.Context, req *Request, id string, urls []string) (*Result, error) {
+	logInfo(req, "replicate.succeeded", "id", id, "audio_count", len(urls))
+	res := &Result{Audios: make([]Audio, 0, len(urls))}
+	for i, u := range urls {
+		b, err := p.downloadBytes(ctx, req.Token, u)
+		if err != nil {
+			logError(req, "audio.download_failed", "index", i, "url", u, "err", err.Error())
+			return nil, fmt.Errorf("download %s: %w", u, err)
+		}
+		format := audioFormatFromURL(u, req.OutputFormat)
+		logInfo(req, "audio.downloaded", "index", i, "bytes", len(b), "format", format)
+		res.Audios = append(res.Audios, Audio{Bytes: b, Format: format, URL: u})
+	}
+	return res, nil
+}
+
+// audioFormatFromURL reports the container an output URL names (mp3 or wav),
+// falling back to the requested format for opaque URLs.
+func audioFormatFromURL(rawURL, fallback string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		switch ext := strings.ToLower(strings.TrimPrefix(path.Ext(u.Path), ".")); ext {
+		case "mp3", "wav":
+			return ext
+		}
+	}
+	return fallback
 }
 
 func (p *ReplicateProvider) downloadImages(ctx context.Context, req *Request, id string, urls []string) (*Result, error) {

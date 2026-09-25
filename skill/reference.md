@@ -1,14 +1,16 @@
 # Curds CLI — full parameter reference
 
-Written from `curds --help` for version `0.3.1`; if the installed help text
+Written from `curds --help` for version `0.4.0`; if the installed help text
 differs, prefer the current `curds --help` output.
 
 ## Output formats
 
-`-output-format` accepts `webp`, `png`, `jpeg`, or `mp4`; the output file
-extension also drives the format unless the flag is set. For ordinary video
-generation, `.mp4` uses the current default video model unless `-provider` or
-`-model` overrides it. OpenAI supports `-output-compression` for WebP and JPEG.
+`-output-format` accepts `webp`, `png`, `jpeg`, `mp4`, `mp3`, or `wav`; the
+output file extension also drives the format unless the flag is set. For
+ordinary video generation, `.mp4` uses the current default video model unless
+`-provider` or `-model` overrides it; `.mp3`/`.wav` require an audio model
+(`-model music`, `music-vocal`, or `sfx`). OpenAI supports
+`-output-compression` for WebP and JPEG.
 
 ## Image sizes and aspect ratios
 
@@ -145,6 +147,47 @@ video to match new audio.
 `-crop-captions` crops a generated video to the top 74% of the frame
 (centered) to remove a burned-in caption band; ffmpeg re-encodes at crf 16 and
 copies audio, and the flag is a no-op without ffmpeg.
+
+## Music and sound effects (Replicate, only when the user asks)
+
+Prompt-in/audio-out; no input media, no `-aspect-ratio` / `-size` /
+`-quality` (not sent). Output is `mp3` unless `-output` ends in `.wav`.
+`curds run OWNER/MODEL key=value …` drives any other audio model.
+
+`-model music` (`elevenlabs/music`, the default music model): score, cue, or
+loop. Instrumental by default (`-instrumental=false` for vocals); honors
+`-duration` exactly, 5–300s (default 10), sent as `music_length_ms`. No
+`-lyrics`, no `-seed`.
+
+```bash
+curds -no-tui -model music -duration 45 -prompt "$PROMPT" -output "$OUT.mp3"
+```
+
+`-model music-vocal` (`minimax/music-2.6`, alias `minimax-music`): a full song
+with vocals. `-prompt` sets style; `-lyrics TEXT` or `-lyrics @file.txt` gives
+the words (`[Verse]`/`[Chorus]` tags and newlines pass through), and lyrics
+work with no prompt. Without lyrics the model writes them from the prompt.
+It ignores length upstream (2–3 min renders), so with `-duration` curds trims
+the download with a 2s fade-out via ffmpeg (`event=audio.trimmed`; no ffmpeg →
+`audio.trim_skipped`, full render kept). No `-seed`.
+
+```bash
+curds -no-tui -model music-vocal -lyrics @song.txt -duration 60 -prompt "$PROMPT" -output "$OUT.mp3"
+```
+
+`-model sfx` (`stability-ai/stable-audio-2.5`): sound effects, ambience, short
+cues. `-duration` 1–190s (default 10), optional `-seed`. It picks its own
+container: curds transcodes to the requested one via ffmpeg when available,
+else saves the returned container under its own extension
+(`event=audio.format_mismatch`).
+
+```bash
+curds -no-tui -model sfx -duration 8 -prompt "$PROMPT" -output "$OUT.wav"
+```
+
+`-lyrics` anywhere but `music-vocal` is a usage error (exit 2), as is a
+duration outside the model's range or an audio output format without an audio
+model.
 
 ## Raw Replicate passthrough (`curds run`)
 

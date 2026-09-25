@@ -272,11 +272,16 @@ func TestRunSubcommandSchema(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("want one line per input, got %q", printed)
 	}
-	if !strings.HasPrefix(lines[0], "name=\"sync_mode\"") {
+	// Plain alphanumeric values must render unquoted: the logfmt quoter only
+	// quotes values that would read back ambiguously.
+	if !strings.HasPrefix(lines[0], "name=sync_mode") {
 		t.Errorf("sorted output expected, got %q", lines[0])
 	}
-	if !strings.Contains(lines[0], "enum=\"[loop,bounce]\"") {
+	if !strings.Contains(lines[0], "enum=[loop,bounce]") {
 		t.Errorf("enum from $ref missing: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "type=string") || !strings.Contains(lines[0], "default=loop") {
+		t.Errorf("plain values must stay unquoted: %q", lines[0])
 	}
 	if !strings.Contains(lines[1], "name=video") || !strings.Contains(lines[1], "description=\"Source video\"") {
 		t.Errorf("description missing: %q", lines[1])

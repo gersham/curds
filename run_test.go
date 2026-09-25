@@ -314,19 +314,24 @@ func TestSchemaFieldString(t *testing.T) {
 		{
 			name:  "full",
 			field: SchemaField{Name: "mode", Type: "string", Default: "std", HasDefault: true, Enum: []string{"std", "pro"}, Description: "Motion quality"},
-			// Values are quoted through the shared logfmt quoter, like every
-			// other curds line: `mode` needs no quotes, `string` does.
-			want: `name=mode type="string" default="std" enum="[std,pro]" description="Motion quality"`,
+			// Plain alphanumeric values stay unquoted; only values that would
+			// read back ambiguously (whitespace, quotes, `=`) get quoted.
+			want: `name=mode type=string default=std enum=[std,pro] description="Motion quality"`,
 		},
 		{
 			name:  "plain string input",
 			field: SchemaField{Name: "audio", Type: "string"},
-			want:  `name=audio type="string"`,
+			want:  `name=audio type=string`,
 		},
 		{
 			name:  "numeric bounds",
 			field: SchemaField{Name: "temperature", Type: "number", Minimum: &min, Maximum: &max},
-			want:  `name="temperature" type="number" min=0 max=1`,
+			want:  `name=temperature type=number min=0 max=1`,
+		},
+		{
+			name:  "seed keeps its letters unquoted",
+			field: SchemaField{Name: "seed", Type: "integer", Default: "1", HasDefault: true},
+			want:  `name=seed type=integer default=1`,
 		},
 	}
 	for _, tc := range cases {

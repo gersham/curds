@@ -119,11 +119,15 @@ func logError(req *Request, event string, kv ...any) {
 	logEvent(req.Logger, "error", event, kv...)
 }
 
+// logfmtQuote quotes a value only when it would be ambiguous when read back:
+// empty, or containing whitespace, quotes, or an equals sign. The character
+// set is an interpreted string literal — writing it between backticks would
+// make \n / \t the letters n and t and quote half the alphanumeric values.
 func logfmtQuote(s string) string {
 	if s == "" {
 		return `""`
 	}
-	if strings.ContainsAny(s, ` "=\n\r\t`) {
+	if strings.ContainsAny(s, " \"=\n\r\t") {
 		return strconv.Quote(s)
 	}
 	return s

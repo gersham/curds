@@ -131,6 +131,27 @@ replicate_name = "kwaivgi/kling-avatar-v2"
 [models.lipsync]
 replicate_name = "sync/lipsync-2-pro"
 
+# ElevenLabs Music via Replicate (-model music). Default music model: a score
+# or loop from -prompt, instrumental by default (-instrumental=false for
+# vocals), in mp3 or wav, honoring -duration exactly (5-300s).
+[models.music]
+replicate_name = "elevenlabs/music"
+
+# MiniMax Music 2.6 via Replicate (-model music-vocal, alias minimax-music).
+# A full song from -prompt and/or -lyrics (TEXT or @file.txt; [Verse]/[Chorus]
+# tags welcome). Vocal by default. It ignores the requested length upstream, so
+# -duration trims the result locally via ffmpeg when available.
+[models.music-vocal]
+replicate_name = "minimax/music-2.6"
+[models.minimax-music]
+replicate_name = "minimax/music-2.6"
+
+# Stable Audio 2.5 via Replicate (-model sfx). Sound effects, ambience, and
+# short music cues from -prompt, 1-190s (-duration, default 10), optional
+# -seed. Returns its own container; curds reconciles it after download.
+[models.sfx]
+replicate_name = "stability-ai/stable-audio-2.5"
+
 # Segmentation / background removal. Replicate-only. Returns a transparent
 # PNG matching the input image's dimensions. Use with -input-image.
 [models.remove-bg]
@@ -166,6 +187,10 @@ var builtinModels = map[string]ModelConfig{
 	"grok-imagine-video-1.5": {ReplicateName: "xai/grok-imagine-video-1.5"},
 	"seedance-2":             {ReplicateName: "bytedance/seedance-2.0"},
 	"remove-bg":              {ReplicateName: "bria/remove-background"},
+	"music":                  {ReplicateName: "elevenlabs/music"},
+	"music-vocal":            {ReplicateName: "minimax/music-2.6"},
+	"minimax-music":          {ReplicateName: "minimax/music-2.6"},
+	"sfx":                    {ReplicateName: "stability-ai/stable-audio-2.5"},
 	"upscale":                {ReplicateName: "nightmareai/real-esrgan"},
 }
 

@@ -8,7 +8,10 @@ project-local context. Keep it short and load-bearing.
 A Go CLI + library for generating images via OpenAI's gpt-image-2.5 (direct;
 Flare default, Sunburst via `-model gpt-image-2.5-sunburst`),
 plus images/videos via Replicate-hosted models (FLUX.2 [pro], Nano Banana 2,
-Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), talking heads and
+Seedance 2.0, Kling 3.0, MiniMax H3, Grok Imagine Video 1.5), music and sound
+effects via `elevenlabs/music` (-model music), `minimax/music-2.6`
+(-model music-vocal, alias minimax-music) and `stability-ai/stable-audio-2.5`
+(-model sfx), talking heads and
 lip-sync via `kwaivgi/kling-avatar-v2` and `sync/lipsync-2-pro`, plus background
 removal via `bria/remove-background` (segmentation), plus image upscaling via
 `nightmareai/real-esrgan` and `topazlabs/image-upscale` (super-resolution).
@@ -105,6 +108,23 @@ file; if you add a provider, model, or flag that changes the happy path, update
   `replicateImageFormat`, take one image per prediction, and ignore
   quality/background/moderation. `Request.ImageResolution` carries
   `-image-resolution` for both.
+- **Audio models.** `music` (`elevenlabs/music`), `music-vocal`
+  (`minimax/music-2.6`, alias `minimax-music`) and `sfx`
+  (`stability-ai/stable-audio-2.5`) are Replicate-only, prompt-driven (except
+  that music-vocal also runs on `-lyrics` alone), and emit `Result.Audios` +
+  `mp3`/`wav` output. `IsAudioModel` gates their validation,
+  request-building, download and save paths. `-duration` maps onto
+  `music_length_ms` (music, 5-300s) or `duration` (sfx, 1-190s, default 10);
+  music-vocal ignores length upstream, so the CLI trims post-download with a
+  2s fade-out (`maybeTrimAudio`/`trimAudioInPlace`, ffmpeg-gated like
+  `maybeStripAudio`). `-lyrics` (`TEXT` or `@file.txt`) is music-vocal only
+  and implies vocals, which forces `is_instrumental=false`; otherwise
+  `Request.Instrumental` (nil = model default) decides. Sfx picks its own
+  container, so `saveAudios`/`writeAudioAsset` transcode to the requested one
+  via ffmpeg when available, else keep the returned container's extension and
+  log `audio.format_mismatch`. Enums: elevenlabs mp3 → `mp3_high_quality`,
+  wav → `wav_cd_quality`; minimax sends `sample_rate` 44100 / `bitrate`
+  256000. `IsPromptlessModel` must NOT list audio models.
 - **Default output path:** `<config.output.directory>/<unix_milli>.<format>`.
   Changing the default path → update `config.DefaultTOML` and the README.
   When a model can only emit one format (segmentation, upscale, Nano Banana),

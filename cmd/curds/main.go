@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,7 +33,7 @@ import (
 )
 
 // version is the curds release version, reported by the curds.start log event.
-const version = "0.3.1"
+const version = "0.4.0"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -85,6 +86,9 @@ type cliOptions struct {
 	seed              int
 	scale             float64
 	faceEnhance       bool
+	duration          float64
+	instrumental      bool
+	lyrics            string
 	pollInterval      time.Duration
 	timeout           time.Duration
 	verbose           bool
@@ -217,6 +221,15 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if err := curds.CheckProviderModel(opts.provider, resolvedModel); err != nil {
 		return &usageError{err: err}
 	}
+	// -lyrics @file.txt and the audio flags are validated before any network
+	// call or TUI prompt: a bad duration or a lyrics flag on the wrong model is
+	// a usage error (exit 2).
+	if err := resolveLyrics(opts); err != nil {
+		return &usageError{err: err}
+	}
+	if err := validateAudioFlags(resolvedModel, opts); err != nil {
+		return &usageError{err: err}
+	}
 	applyModelOutputDefaults(opts, cfg, resolvedModel, logger)
 
 	// Compute default output path if -output was not given.
@@ -246,21 +259,28 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	}
 
 	// The media-driven models need no prompt, so don't drop into the
-	// prompt-asking TUI for them.
+	// prompt-asking TUI for them. MiniMax Music 2.6 is the one audio model that
+	// also runs on -lyrics alone.
 	needsPrompt := !curds.IsPromptlessModel(resolvedModel)
-	needTUI := !opts.noTUI && (token == "" || opts.provider == "" || (needsPrompt && opts.prompt == ""))
+	promptMissing := needsPrompt && strings.TrimSpace(opts.prompt) == ""
+	if curds.IsMusicVocalModel(resolvedModel) && strings.TrimSpace(opts.lyrics) != "" {
+		promptMissing = false
+	}
+	needTUI := !opts.noTUI && (token == "" || opts.provider == "" || promptMissing)
 	if needTUI {
 		return runInteractive(start, logger, opts, cfg, token)
 	}
 
-	if token == "" {
-		return fmt.Errorf("no %s token available; set it in %s, .env, or %s", opts.provider, cfg.Path, envVarFor(opts.provider))
-	}
-	if needsPrompt && strings.TrimSpace(opts.prompt) == "" {
-		return errors.New("prompt is required: use -prompt, pipe to stdin, or omit -no-tui")
+	// Missing required input outranks a missing token: both are usage errors
+	// (exit 2) and naming the flag is what gets the user unstuck.
+	if promptMissing {
+		return &usageError{err: errors.New("prompt is required: use -prompt, pipe to stdin, or omit -no-tui")}
 	}
 	if !needsPrompt && len(opts.inputImages) == 0 && opts.inputVideo == "" {
-		return errors.New("this model requires -input-image PATH")
+		return &usageError{err: errors.New("this model requires -input-image PATH")}
+	}
+	if token == "" {
+		return fmt.Errorf("no %s token available; set it in %s, .env, or %s", opts.provider, cfg.Path, envVarFor(opts.provider))
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -282,7 +302,7 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	if err != nil {
 		return err
 	}
-	if res == nil || (len(res.Images) == 0 && len(res.Videos) == 0) {
+	if res == nil || (len(res.Images) == 0 && len(res.Videos) == 0 && len(res.Audios) == 0) {
 		return errors.New("no assets returned")
 	}
 
@@ -293,10 +313,12 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 
 	maybeCropCaptions(opts, len(res.Videos), paths, os.Stderr)
 	maybeStripAudio(opts, len(res.Videos), paths, os.Stderr)
+	maybeTrimAudio(resolvedModel, opts.duration, len(res.Audios), paths, os.Stderr)
 
 	logger.info("curds.completed",
 		"images", len(res.Images),
 		"videos", len(res.Videos),
+		"audios", len(res.Audios),
 		"total_bytes", totalResultBytes(res),
 		"duration_ms", time.Since(start).Milliseconds(),
 		"paths", strings.Join(paths, ","),
@@ -460,6 +482,11 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		opts.quality = req.Quality
 		opts.numImages = req.NumImages
 		opts.outputFormat = req.OutputFormat
+		if curds.IsAudioModel(resolvedModel) && !flagWasSet("output-format") {
+			// The TUI's format picker only offers image/video containers; an
+			// audio model keeps its own (mp3, or wav for a .wav -output).
+			opts.outputFormat = audioOutputFormat(opts.outputPath)
+		}
 
 		// Refresh output path each iteration so the timestamp is current.
 		var err error
@@ -484,7 +511,7 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		if err != nil {
 			return tui.GenerateResult{Err: err}
 		}
-		if res == nil || (len(res.Images) == 0 && len(res.Videos) == 0) {
+		if res == nil || (len(res.Images) == 0 && len(res.Videos) == 0 && len(res.Audios) == 0) {
 			return tui.GenerateResult{Err: errors.New("no assets returned")}
 		}
 		paths, err := saveResult(opts, res)
@@ -493,11 +520,13 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 		}
 		maybeCropCaptions(opts, len(res.Videos), paths, logsink)
 		maybeStripAudio(opts, len(res.Videos), paths, logsink)
+		maybeTrimAudio(resolvedModel, opts.duration, len(res.Audios), paths, logsink)
 		fmt.Fprint(logsink, curds.FormatLogLine(
 			"info", "curds.completed",
 			[]any{
 				"images", len(res.Images),
 				"videos", len(res.Videos),
+				"audios", len(res.Audios),
 				"total_bytes", totalResultBytes(res),
 				"duration_ms", time.Since(start).Milliseconds(),
 				"paths", strings.Join(paths, ","),
@@ -539,6 +568,9 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		Moderation:        opts.moderation,
 		Audio:             opts.audio,
 		InputVideo:        opts.inputVideo,
+		Duration:          opts.duration,
+		Instrumental:      instrumentalFlag(opts),
+		Lyrics:            opts.lyrics,
 		SyncMode:          opts.syncMode,
 		SyncTemperature:   opts.syncTemperature,
 		ActiveSpeaker:     opts.activeSpeaker,
@@ -580,11 +612,19 @@ func totalVideoBytes(videos []curds.Video) int {
 	return t
 }
 
+func totalAudioBytes(audios []curds.Audio) int {
+	t := 0
+	for _, a := range audios {
+		t += len(a.Bytes)
+	}
+	return t
+}
+
 func totalResultBytes(res *curds.Result) int {
 	if res == nil {
 		return 0
 	}
-	return totalBytes(res.Images) + totalVideoBytes(res.Videos)
+	return totalBytes(res.Images) + totalVideoBytes(res.Videos) + totalAudioBytes(res.Audios)
 }
 
 // openInViewer launches the generated assets in the OS viewer.
@@ -646,10 +686,9 @@ func parseFlags() (*cliOptions, error) {
 	flag.StringVar(&opts.outputPath, "output", "", "Output file path (default: <output.directory>/<ms>.<format>)")
 
 	flag.StringVar(&opts.aspectRatio, "aspect-ratio", "", "Aspect ratio override (default: config.defaults.aspect_ratio)")
-	flag.StringVar(&opts.size, "size", "", "Explicit pixel size for openai (e.g. 2048x1152)")
+	flag.StringVar(&opts.outputFormat, "output-format", "", "Output format: webp, png, jpeg, mp4, mp3, wav")
 	flag.StringVar(&opts.quality, "quality", "", "Quality: low, medium, high, xhigh, max, auto")
 	flag.IntVar(&opts.numImages, "number-of-images", 0, "Number of images (1-10)")
-	flag.StringVar(&opts.outputFormat, "output-format", "", "Output format: webp, png, jpeg, mp4")
 	flag.IntVar(&opts.outputCompression, "output-compression", -1, "Output compression 0-100 (openai webp/jpeg)")
 	flag.StringVar(&opts.background, "background", "", "Background: auto, opaque")
 	flag.StringVar(&opts.moderation, "moderation", "", "Moderation: auto, low")
@@ -675,6 +714,9 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.activeSpeaker, "active-speaker", false, "lipsync: animate the active speaker in the source video")
 	flag.BoolVar(&opts.cropCaptions, "crop-captions", false, "Crop generated videos to the top 74% of the frame, removing captions some avatar/lip-sync models burn in (ffmpeg, re-encodes video)")
 	flag.BoolVar(&opts.noFallback, "no-fallback", false, "Disable the automatic Seedance→Kling 3.0 retry when Seedance rejects a face as sensitive")
+	flag.BoolVar(&opts.instrumental, "instrumental", true, "Music models: render an instrumental track (default: true for -model music, false for -model music-vocal; -lyrics implies vocals)")
+	flag.StringVar(&opts.lyrics, "lyrics", "", "Song lyrics for -model music-vocal: TEXT, or @file.txt (newlines and [Verse]/[Chorus] tags welcome)")
+	flag.Float64Var(&opts.duration, "duration", 0, "Audio length in seconds: -model music 5-300 (default 10); -model sfx 1-190 (default 10); -model music-vocal trims the render locally")
 	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
 
 	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement (upscale models only)")
@@ -701,6 +743,9 @@ func parseFlags() (*cliOptions, error) {
 	}
 	if opts.syncTemperature < -1 || opts.syncTemperature > 1 {
 		return nil, &usageError{err: fmt.Errorf("sync-temperature must be 0-1, got %v", opts.syncTemperature)}
+	}
+	if opts.duration < 0 {
+		return nil, &usageError{err: fmt.Errorf("-duration must be positive, got %g", opts.duration)}
 	}
 	return opts, nil
 }
@@ -856,7 +901,7 @@ func setupUsage() {
 // humans (man-page conventions, no Markdown noise on stdout).
 func helpText() string {
 	return `NAME
-  curds — generate images and videos from text prompts via OpenAI, Replicate, or xAI
+  curds — generate images, videos, music, and sound effects from text prompts
 
 SYNOPSIS
   curds [flags]
@@ -868,6 +913,8 @@ DESCRIPTION
   Generates images using gpt-image-2.5 (default; gpt-image-2, FLUX.2 [pro] and
   Nano Banana 2 are also available), videos with Seedance 2.0 on Replicate (default
   for mp4; Kling 3.0, MiniMax H3, Grok Imagine Video also selectable),
+  music and sound effects with ElevenLabs Music (-model music), MiniMax
+  Music 2.6 (-model music-vocal) and Stable Audio 2.5 (-model sfx),
   talking heads and lip-sync with Kling Avatar 2.0 (-model kling-avatar) and
   Sync Labs lipsync-2-pro (-model lipsync), removes backgrounds
   with bria/remove-background (-model remove-bg), or upscales images with
@@ -895,6 +942,7 @@ PROVIDERS
              Default video model: bytedance/seedance-2.0
              Also available: -model flux-2-pro, nano-banana-2,
                              kling-v3, kling-avatar, minimax-h3, lipsync,
+                             music, music-vocal (alias minimax-music), sfx,
                              grok-imagine-video-1.5, upscale-pro
              Raw passthrough: -model owner/name via the "curds run" subcommand
                               runs any Replicate model with caller-supplied
@@ -996,7 +1044,11 @@ FLAGS
                                            nano-banana-2: 1k, 2k, 4k
                                            (default: 1k). Ignored by other
                                            models.
-    -output-format      {webp|png|jpeg|mp4} default: webp, or mp4 for video
+    -output-format      {webp|png|jpeg|mp4|mp3|wav}
+                                           default: webp, mp4 for video,
+                                           mp3 for audio (wav when -output
+                                           ends in .wav). An mp3/wav output
+                                           needs an audio model.
     -output-compression 0-100              openai webp/jpeg (default: 90)
     -background         {auto|opaque}      default: auto
                                            (transparent unsupported by
@@ -1093,6 +1145,63 @@ FLAGS
                                  retry described under SEEDANCE FACE
                                  REJECTION below
 
+  Music & sound effects (Replicate)
+    -model music                 ElevenLabs Music (elevenlabs/music): a
+                                 score or loop from -prompt, instrumental by
+                                 default, exact -duration.
+    -model music-vocal           MiniMax Music 2.6 (minimax/music-2.6): a
+                                 full song with vocals. Add -lyrics (alias
+                                 -model minimax-music).
+    -model sfx                   Stable Audio 2.5
+                                 (stability-ai/stable-audio-2.5): sound
+                                 effects, ambience, short cues, 1-190s.
+    -duration SECONDS            -model music: 5-300 (default 10), sent as
+                                 music_length_ms. -model sfx: 1-190 (default
+                                 10). -model music-vocal ignores length
+                                 upstream (2-3 min renders), so curds trims
+                                 the result to -duration with a 2s fade-out
+                                 via ffmpeg.
+    -instrumental                render an instrumental track. Default: true
+                                 for -model music, false for -model
+                                 music-vocal. -lyrics implies vocals.
+                                 Ignored by -model sfx.
+    -lyrics TEXT|@FILE           song lyrics for -model music-vocal; [Verse]
+                                 /[Chorus] tags and newlines pass through.
+                                 Without -lyrics the model writes them from
+                                 the prompt.
+
+MUSIC & SOUND EFFECTS
+  Three Replicate models turn a prompt into audio; all save mp3 or wav and
+  require -no-tui (or a prompt) like any other model.
+
+  -model music        ElevenLabs Music (elevenlabs/music) is the default music
+                      model: a score, cue, or loop from -prompt, instrumental
+                      by default (-instrumental=false for vocals), and it
+                      honors -duration exactly (5-300s, default 10).
+  -model music-vocal  MiniMax Music 2.6 (minimax/music-2.6; alias
+                      -model minimax-music) writes a full song with vocals.
+                      -prompt sets the style; -lyrics TEXT (or @song.txt)
+                      supplies the words, with [Verse]/[Chorus] tags and
+                      newlines; with neither set it writes lyrics from the
+                      prompt. -lyrics also works with no -prompt.
+  -model sfx          Stable Audio 2.5 (stability-ai/stable-audio-2.5) makes
+                      sound effects, ambience, and short music, 1-190s
+                      (-duration, default 10), with optional -seed. It picks
+                      its own container: curds transcodes to the requested one
+                      via ffmpeg when available, else saves the container that
+                      came back (with a warning).
+
+  -duration is in seconds. music_length_ms is sent upstream for music; sfx
+  gets an integer duration. music-vocal ignores the length upstream, so curds
+  trims the downloaded render to -duration with a 2s fade-out via ffmpeg
+  (event=audio.trimmed; without ffmpeg it logs audio.trim_skipped and keeps
+  the full render).
+
+  -lyrics is music-vocal only; passing it to another model is a usage error.
+  -aspect-ratio, -size, -quality, -background, and -moderation are ignored by
+  audio models (not sent). For any other audio model on Replicate use the raw
+  passthrough: curds run OWNER/MODEL key=value ...
+
 RUN SUBCOMMAND
   curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]
     Creates one Replicate prediction with exactly the inputs given — no field
@@ -1134,6 +1243,8 @@ ASPECT RATIOS
   Kling 3.0 accepts:                    16:9, 9:16, 1:1
   Kling Avatar 2.0, lipsync accept:    no -aspect-ratio — the portrait or
                                        source video defines the frame
+  music, music-vocal, sfx accept:      no -aspect-ratio — audio has no frame
+                                       (-size / -quality are ignored too)
   FLUX.2 [pro] accepts:                 match_input_image, 1:1, 16:9,
                                        3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3
                                        (or -size WxH, 256-2048 per edge)
@@ -1278,6 +1389,24 @@ EXAMPLES
   curds -model kling-avatar -input-image portrait.png -audio voice.mp3 \
         -crop-captions -output /tmp/avatar.mp4
 
+  # Score: a 45-second instrumental cue with an exact length (ElevenLabs Music)
+  curds -model music -duration 45 \
+        -prompt "tense minimal synth score, slow build, no drums" \
+        -output /tmp/score.mp3
+
+  # Song with lyrics read from a file (MiniMax Music 2.6)
+  curds -model music-vocal -lyrics @song.txt -duration 60 \
+        -prompt "warm indie-folk duet, acoustic guitar and brushed drums" \
+        -output /tmp/song.mp3
+
+  # 8-second ambience sound effect (Stable Audio 2.5)
+  curds -model sfx -duration 8 \
+        -prompt "steady heavy rain on a tin roof, distant thunder" \
+        -output /tmp/rain.wav
+
+  # Any other audio model, raw inputs (see "curds run -h")
+  curds run -schema owner/audio-model
+
   # Any Replicate model, raw inputs (see "curds run -h")
   curds run -schema sync/lipsync-2-pro
   curds run sync/lipsync-2-pro video=@clip.mp4 audio=@voice.wav sync_mode=loop
@@ -1330,7 +1459,7 @@ func applyConfigDefaults(opts *cliOptions, cfg *config.Config) {
 	if opts.outputPath != "" && !flagWasSet("output-format") {
 		if ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(opts.outputPath), ".")); ext != "" {
 			switch ext {
-			case "webp", "png", "mp4":
+			case "webp", "png", "mp4", "mp3", "wav":
 				opts.outputFormat = ext
 			case "jpeg", "jpg":
 				opts.outputFormat = "jpeg"
@@ -1369,6 +1498,13 @@ func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string
 				opts.aspectRatio = "16:9"
 			}
 		}
+	case curds.IsAudioModel(model):
+		// Audio models emit mp3 or wav only. Default to mp3, honoring an
+		// explicit .wav -output extension; the bytes and the name are then
+		// reconciled after download (stable-audio-2.5 picks its own container).
+		if !flagWasSet("output-format") {
+			opts.outputFormat = audioOutputFormat(opts.outputPath)
+		}
 	case curds.IsSegmentationModel(model), curds.IsUpscaleModel(model):
 		// bria/remove-background returns a transparent PNG and the upscalers
 		// return an upscaled PNG. Forcing PNG here avoids saving with the
@@ -1404,6 +1540,16 @@ func applyModelOutputDefaults(opts *cliOptions, cfg *config.Config, model string
 	}
 }
 
+// audioOutputFormat picks the container for an audio model: wav when -output
+// names one, mp3 otherwise. Callers apply it only when -output-format was left
+// unset, so an explicit flag always wins.
+func audioOutputFormat(outputPath string) string {
+	if strings.ToLower(strings.TrimPrefix(filepath.Ext(outputPath), ".")) == "wav" {
+		return "wav"
+	}
+	return "mp3"
+}
+
 // normalizeFormatExt maps a file extension onto curds' output-format spelling.
 func normalizeFormatExt(ext string) string {
 	if ext == "jpg" {
@@ -1428,7 +1574,10 @@ func saveResult(opts *cliOptions, res *curds.Result) ([]string, error) {
 	if res == nil {
 		return nil, nil
 	}
-	if len(res.Videos) > 0 {
+	switch {
+	case len(res.Audios) > 0:
+		return saveAudios(opts, res.Audios)
+	case len(res.Videos) > 0:
 		return saveVideos(opts, res.Videos)
 	}
 	return saveImages(opts, res.Images)
@@ -1507,6 +1656,184 @@ func saveVideos(opts *cliOptions, videos []curds.Video) ([]string, error) {
 	return paths, nil
 }
 
+// saveAudios writes each rendered audio asset. The audio models mostly return
+// the container curds requested, but stable-audio-2.5 picks its own, so when
+// the downloaded container differs curds transcodes to the requested one when
+// ffmpeg is on PATH and otherwise keeps the model's container under its own
+// extension (with a warning) rather than naming wav bytes .mp3.
+func saveAudios(opts *cliOptions, audios []curds.Audio) ([]string, error) {
+	origExt := filepath.Ext(opts.outputPath)
+	stem := strings.TrimSuffix(opts.outputPath, origExt)
+	ext := origExt
+	if ext == "" {
+		ext = "." + opts.outputFormat
+	}
+
+	paths := make([]string, 0, len(audios))
+	for i, audio := range audios {
+		var path string
+		switch {
+		case len(audios) > 1:
+			path = fmt.Sprintf("%s-%d%s", stem, i+1, ext)
+		case origExt == "":
+			path = stem + ext
+		default:
+			path = opts.outputPath
+		}
+		if dir := filepath.Dir(path); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, err
+			}
+		}
+		path, err := writeAudioAsset(opts, audio, path, os.Stderr)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Println(path)
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+// writeAudioAsset writes one audio asset to path and returns the path actually
+// written. When the model returned a different container than requested it
+// transcodes via ffmpeg if available; otherwise the file keeps the container it
+// came in, so path's extension is retargeted to match.
+func writeAudioAsset(opts *cliOptions, audio curds.Audio, path string, w io.Writer) (string, error) {
+	want := opts.outputFormat
+	actual := strings.ToLower(strings.TrimSpace(audio.Format))
+	if actual == "" {
+		actual = want
+	}
+	if actual == want {
+		return path, os.WriteFile(path, audio.Bytes, 0o644)
+	}
+	if ffmpeg, err := lookPath("ffmpeg"); err == nil {
+		if err := transcodeAudio(ffmpeg, audio.Bytes, actual, path); err != nil {
+			return path, fmt.Errorf("transcode %s to %s: %w", actual, want, err)
+		}
+		return path, nil
+	}
+	retargeted := strings.TrimSuffix(path, filepath.Ext(path)) + "." + actual
+	fmt.Fprint(w, curds.FormatLogLine("warn", "audio.format_mismatch",
+		[]any{
+			"model_returned", actual, "requested", want, "path", retargeted,
+			"hint", "install ffmpeg to transcode",
+		}, curds.IsTerminalWriter(w)))
+	return retargeted, os.WriteFile(retargeted, audio.Bytes, 0o644)
+}
+
+// transcodeAudio re-encodes audioBytes (a from-container file) into path,
+// letting ffmpeg pick the encoder from path's extension. The source bytes go
+// through a sibling temp file so a failure never leaves a partial result.
+func transcodeAudio(ffmpeg string, audioBytes []byte, from, path string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "curds-audio-*."+from)
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(audioBytes); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	cmd := exec.Command(ffmpeg, "-y", "-loglevel", "error", "-i", tmpName, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// lookPath is exec.LookPath behind a variable so tests can exercise the
+// "ffmpeg is not installed" branches without manipulating PATH.
+var lookPath = exec.LookPath
+
+// audioTrimFade is the fade-out curds applies when it trims a MiniMax Music
+// 2.6 render, so the cut does not click.
+const audioTrimFade = 2.0
+
+// maybeTrimAudio shortens a MiniMax Music 2.6 render to -duration. That model
+// ignores the requested length upstream (it renders 2-3 minutes), so the only
+// way to honor -duration is to cut the downloaded file, with a 2s fade-out.
+// Like maybeStripAudio it skips cleanly without ffmpeg, logs either way, and
+// treats a failure as non-fatal: the untrimmed render is preserved.
+func maybeTrimAudio(model string, seconds float64, audioCount int, paths []string, w io.Writer) {
+	if !curds.IsMusicVocalModel(model) || seconds <= 0 || audioCount == 0 {
+		return
+	}
+	color := curds.IsTerminalWriter(w)
+	ffmpeg, err := lookPath("ffmpeg")
+	if err != nil {
+		fmt.Fprint(w, curds.FormatLogLine("warn", "audio.trim_skipped",
+			[]any{
+				"reason", "ffmpeg not found on PATH", "path", strings.Join(paths, ","),
+				"hint", "install ffmpeg to trim music-vocal output to -duration",
+			}, color))
+		return
+	}
+	for _, p := range paths {
+		if err := trimAudioInPlace(ffmpeg, p, seconds); err != nil {
+			fmt.Fprint(w, curds.FormatLogLine("error", "audio.trim_failed",
+				[]any{"path", p, "err", err.Error()}, color))
+			continue
+		}
+		fmt.Fprint(w, curds.FormatLogLine("info", "audio.trimmed",
+			[]any{"path", p, "duration_s", seconds}, color))
+	}
+}
+
+// trimAudioInPlace rewrites path as the first seconds of itself with a 2s
+// fade-out. The fade needs a re-encode, so the audio codec is chosen from the
+// file's own extension (mp3 stays mp3, wav stays wav). It writes to a sibling
+// temp file and atomically renames over the original so a failure never
+// corrupts the render.
+func trimAudioInPlace(ffmpeg, path string, seconds float64) error {
+	ext := filepath.Ext(path)
+	if ext == "" {
+		ext = ".mp3"
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "curds-trim-*"+ext)
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	args := trimAudioArgs(path, tmpName, seconds)
+	if out, err := exec.Command(ffmpeg, args...).CombinedOutput(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("ffmpeg: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// trimAudioArgs is the ffmpeg argument vector for a trim: keep the first
+// seconds, fade the last 2s out, re-encode into tmpPath.
+func trimAudioArgs(path, tmpPath string, seconds float64) []string {
+	fadeStart := seconds - audioTrimFade
+	if fadeStart < 0 {
+		fadeStart = 0
+	}
+	return []string{
+		"-y", "-loglevel", "error",
+		"-i", path,
+		"-t", formatSeconds(seconds),
+		"-af", "afade=t=out:st=" + formatSeconds(fadeStart) + ":d=" + formatSeconds(audioTrimFade),
+		tmpPath,
+	}
+}
+
+// formatSeconds renders a duration for ffmpeg without a trailing ".0".
+func formatSeconds(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
 // maybeStripAudio removes the audio track from each generated video file when
 // -strip-audio is enabled. xAI/Grok always generate audio and the x.ai API has
 // no mute option, so post-processing is the only way to get silent clips. Uses
@@ -1518,7 +1845,7 @@ func maybeStripAudio(opts *cliOptions, videoCount int, paths []string, w io.Writ
 		return
 	}
 	color := curds.IsTerminalWriter(w)
-	ffmpeg, err := exec.LookPath("ffmpeg")
+	ffmpeg, err := lookPath("ffmpeg")
 	if err != nil {
 		fmt.Fprint(w, curds.FormatLogLine("warn", "audio.strip_skipped",
 			[]any{"reason", "ffmpeg not found on PATH", "hint", "install ffmpeg or pass -strip-audio=false"}, color))
@@ -1574,7 +1901,7 @@ func maybeCropCaptions(opts *cliOptions, videoCount int, paths []string, w io.Wr
 		return
 	}
 	color := curds.IsTerminalWriter(w)
-	ffmpeg, err := exec.LookPath("ffmpeg")
+	ffmpeg, err := lookPath("ffmpeg")
 	if err != nil {
 		fmt.Fprint(w, curds.FormatLogLine("warn", "captions.crop_skipped",
 			[]any{"reason", "ffmpeg not found on PATH", "hint", "install ffmpeg or pass -crop-captions=false"}, color))
@@ -1642,6 +1969,67 @@ func validateMediaInputs(model string, opts *cliOptions) error {
 		}
 		if strings.TrimSpace(opts.audio) == "" {
 			return fmt.Errorf("model %s requires -audio PATH (wav)", model)
+		}
+	}
+	return nil
+}
+
+// resolveLyrics turns -lyrics @file.txt into the file's contents. A bare value
+// is the lyrics themselves. Runs before validation so the model checks see the
+// real text.
+func resolveLyrics(opts *cliOptions) error {
+	if !strings.HasPrefix(opts.lyrics, "@") {
+		return nil
+	}
+	path := strings.TrimPrefix(opts.lyrics, "@")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read -lyrics file: %w", err)
+	}
+	opts.lyrics = strings.TrimSpace(string(b))
+	return nil
+}
+
+// instrumentalFlag reads -instrumental only when the user actually passed it,
+// so the library can apply the model's own default (true for -model music,
+// false for -model music-vocal) and let -lyrics imply vocals.
+func instrumentalFlag(opts *cliOptions) *bool {
+	if !flagWasSet("instrumental") {
+		return nil
+	}
+	v := opts.instrumental
+	return &v
+}
+
+// validateAudioFlags enforces the audio contract before any network call: an
+// mp3/wav output needs an audio model, -lyrics belongs to -model music-vocal,
+// and -duration has to sit inside the model's own range. Each failure is a
+// usage error (exit 2) naming the flag.
+func validateAudioFlags(model string, opts *cliOptions) error {
+	if !curds.IsAudioModel(model) {
+		if opts.outputFormat == "mp3" || opts.outputFormat == "wav" {
+			return fmt.Errorf("-output-format %s needs an audio model: pass -model music, -model music-vocal, or -model sfx", opts.outputFormat)
+		}
+		if strings.TrimSpace(opts.lyrics) != "" {
+			return errors.New("-lyrics is only supported by -model music-vocal")
+		}
+		return nil
+	}
+	if strings.TrimSpace(opts.lyrics) != "" && !curds.IsMusicVocalModel(model) {
+		return fmt.Errorf("-lyrics is only supported by -model music-vocal (%s renders instrumentals)", model)
+	}
+	switch {
+	case curds.IsMusicModel(model):
+		if opts.duration != 0 && (opts.duration < 5 || opts.duration > 300) {
+			return fmt.Errorf("-duration must be 5-300 seconds for -model music, got %g", opts.duration)
+		}
+	case curds.IsSFXModel(model):
+		if opts.duration != 0 && (opts.duration < 1 || opts.duration > 190) {
+			return fmt.Errorf("-duration must be 1-190 seconds for -model sfx, got %g", opts.duration)
+		}
+	case curds.IsMusicVocalModel(model):
+		if opts.duration != 0 && opts.duration < 1 {
+			return fmt.Errorf("-duration must be at least 1 second for -model music-vocal, got %g", opts.duration)
 		}
 	}
 	return nil

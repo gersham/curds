@@ -30,7 +30,7 @@ func withClient(t *testing.T, c *curds.Client) {
 func ttsTestEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("CURDS_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
-	for _, v := range []string{"OPENAI_API_KEY", "REPLICATE_API_TOKEN", "XAI_API_KEY"} {
+	for _, v := range []string{"OPENAI_API_KEY", "REPLICATE_API_TOKEN", "XAI_API_KEY", "ELEVENLABS_API_KEY"} {
 		t.Setenv(v, "")
 	}
 }

@@ -46,10 +46,13 @@ format = "webp"
 compression = 90
 
 # API tokens. Leave blank to defer to .env / env vars.
+# elevenlabs is optional: with it, -model tts-elevenlabs and -model music call
+# the ElevenLabs API directly; without it they run on Replicate.
 [tokens]
 openai = ""
 replicate = ""
 xai = ""
+elevenlabs = ""
 
 # Default image-gen parameters. Override via CLI flags.
 [defaults]
@@ -141,7 +144,8 @@ replicate_name = "sync/lipsync-2-pro"
 
 # ElevenLabs Music via Replicate (-model music). Default music model: a score
 # or loop from -prompt, instrumental by default (-instrumental=false for
-# vocals), in mp3 or wav, honoring -duration exactly (5-300s).
+# vocals), in mp3 or wav, honoring -duration exactly (5-300s). With an
+# elevenlabs token it runs on the ElevenLabs API instead (music_v2_5, 3-600s).
 [models.music]
 replicate_name = "elevenlabs/music"
 
@@ -176,7 +180,9 @@ replicate_name = "minimax/speech-2.8-hd"
 # ElevenLabs v3 via Replicate (-model tts-elevenlabs). Expressive
 # text-to-speech with -stability / -style per voice. The text is read verbatim:
 # bracketed markers in it are spoken aloud, not interpreted. Returns mp3; a
-# .wav -output is transcoded locally.
+# .wav -output is transcoded locally. With an elevenlabs token it runs on the
+# ElevenLabs API instead (eleven_v4 by default, any voice id, audio tags
+# interpreted); -provider replicate keeps it here.
 [models.tts-elevenlabs]
 replicate_name = "elevenlabs/v3"
 
@@ -267,9 +273,10 @@ type OutputConfig struct {
 }
 
 type TokensConfig struct {
-	OpenAI    string `toml:"openai"`
-	Replicate string `toml:"replicate"`
-	Xai       string `toml:"xai"`
+	OpenAI     string `toml:"openai"`
+	Replicate  string `toml:"replicate"`
+	Xai        string `toml:"xai"`
+	ElevenLabs string `toml:"elevenlabs"`
 }
 
 type DefaultsConfig struct {
@@ -461,6 +468,9 @@ func ResolveToken(provider string, cfg *Config, dotenv map[string]string, getenv
 	case "xai":
 		fromCfg = cfg.Tokens.Xai
 		envName = "XAI_API_KEY"
+	case "elevenlabs":
+		fromCfg = cfg.Tokens.ElevenLabs
+		envName = "ELEVENLABS_API_KEY"
 	default:
 		return ""
 	}
@@ -478,7 +488,9 @@ func ResolveToken(provider string, cfg *Config, dotenv map[string]string, getenv
 
 // DetectProvider returns the first provider with a non-empty token. The
 // configured provider wins outright; otherwise OpenAI is preferred over
-// Replicate.
+// Replicate. ElevenLabs is never auto-detected: it serves only two models, so
+// the CLI routes to it per model (-model tts-elevenlabs / -model music) when
+// its token resolves.
 func DetectProvider(cfg *Config, dotenv map[string]string, getenv func(string) string) string {
 	if cfg.Provider != "" {
 		return cfg.Provider

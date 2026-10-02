@@ -22,6 +22,9 @@ removal via `bria/remove-background` (segmentation), plus image upscaling via
 `curds run OWNER/MODEL key=value …` is a raw Replicate passthrough (`run.go` in
 the library, `cmd/curds/run.go` in the CLI); it shares `ReplicateProvider`'s
 prediction lifecycle (`runPrediction`) but does no field mapping.
+With an ElevenLabs key, `-model tts-elevenlabs` and `-model music` run on the
+ElevenLabs API directly (`elevenlabs.go`, provider `elevenlabs`), and
+`curds voices` (`cmd/curds/voices.go`) lists account and shared-library voices.
 Module path: `github.com/gersham/curds`.
 
 ## Layout
@@ -30,10 +33,13 @@ Module path: `github.com/gersham/curds`.
 .
 ├── cmd/curds/main.go      package main — CLI flag parsing, TUI dispatch, output
 ├── cmd/curds/run.go       package main — the `curds run` subcommand
+├── cmd/curds/voices.go    package main — the `curds voices` subcommand
 ├── client.go              package curds — Client, Request, Result, types
 ├── openai.go              package curds — OpenAI Image API provider
 ├── replicate.go           package curds — Replicate API provider (incl. the
 │                          Seedance→Kling face-rejection fallback)
+├── elevenlabs.go          package curds — ElevenLabs API provider (direct TTS,
+│                          music, voice listing/resolution)
 ├── run.go                 package curds — raw passthrough Run/Schema/input parsing
 ├── log.go                 package curds — shared logfmt + lipgloss formatter
 ├── curds_test.go          package curds — unit + httptest tests
@@ -159,7 +165,33 @@ file; if you add a provider, model, or flag that changes the happy path, update
   Gemini returns WAV and ElevenLabs mp3, so a mismatched container is
   transcoded after download rather than requested upstream. elevenlabs/v3 on
   Replicate does NOT parse inline markers: bracketed text is spoken aloud, and
-  no docs may claim otherwise.
+  no docs may claim otherwise. The direct ElevenLabs route (below) DOES
+  interpret them on eleven_v4/eleven_v3; docs must keep the two routes apart.
+- **ElevenLabs direct route.** `selectElevenLabsRoute` (CLI) decides it: when
+  the resolved model is Replicate's `elevenlabs/v3` or `elevenlabs/music` (or
+  a raw `eleven_*` / `music_v*` id) and an elevenlabs token resolves through
+  `config.ResolveToken` (`[tokens] elevenlabs` > `.env` > `ELEVENLABS_API_KEY`),
+  the provider becomes `elevenlabs` and `opts.directModel` replaces the
+  resolved model: `-tts-model` (default `DefaultElevenLabsTTSModel`,
+  `eleven_v4`) or `DefaultElevenLabsMusicModel` (`music_v2_5`). No token, or
+  `-provider replicate`, keeps the Replicate route untouched. Both outcomes log
+  `event=elevenlabs.route route=direct|replicate model=... reason=...`.
+  ElevenLabs is never auto-detected as the general provider. The direct ids
+  are their own models: `IsElevenLabsDirectTTSModel` / `IsElevenLabsDirectMusicModel`
+  (covered by `IsTTSModel` / `IsAudioModel`), validated in `validateTTS` /
+  `validateAudio` and the CLI's `validateTTSFlags` / `validateAudioFlags`.
+  Voice settings are per model (`elevenLabsTTSModels`, checked by
+  `CheckElevenLabsVoiceSettings` from both layers): stability everywhere,
+  similarity everywhere but eleven_v3, style/speaker boost on
+  eleven_multilingual_v2, speed on multilingual/flash; unknown ids pass
+  through. `-similarity` / `-speaker-boost` / `-tts-model` exist only on the
+  direct route. `-voice` there is any 20-char voice id or an account voice
+  name resolved by the provider via `GET /v2/voices` (not the deprecated
+  `/v1/voices`); the default is George (`DefaultElevenLabsVoiceID`) because
+  Replicate's Rachel is a legacy voice. Output walks a format ladder
+  (`elevenLabsSpeechFormats` / `elevenLabsMusicFormats`), stepping down only
+  on `output_format_not_allowed` (`event=elevenlabs.format_fallback`). The
+  ElevenLabs `APIBase` has no `/v1` suffix because paths mix `/v1` and `/v2`.
 - **Audio models.** `music` (`elevenlabs/music`), `music-vocal`
   (`minimax/music-2.6`, alias `minimax-music`) and `sfx`
   (`stability-ai/stable-audio-2.5`) are Replicate-only, prompt-driven (except
@@ -239,8 +271,8 @@ existed still resolve the key instead of passing it through raw.
 
 - Don't add a `replicate-image-gen` or `imagegen` directory — the rebrand is
   intentional and complete.
-- Don't reach into `os.Getenv` for `OPENAI_API_KEY` / `REPLICATE_API_TOKEN`
-  outside of `config/` — it breaks the priority chain.
+- Don't reach into `os.Getenv` for `OPENAI_API_KEY` / `REPLICATE_API_TOKEN` /
+  `ELEVENLABS_API_KEY` outside of `config/` — it breaks the priority chain.
 - Don't write to the user's `~/.config/curds/config.toml` except via
   `config.SaveTokens` (called only by the TUI when the user opted in).
 - Don't add network calls outside the providers — the CLI should never talk

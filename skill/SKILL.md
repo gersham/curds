@@ -1,6 +1,6 @@
 ---
 name: curds
-description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, generate music, sound effects, or spoken audio (text to speech), remove image backgrounds, or upscale images through OpenAI or Replicate.
+description: Use for `$curds`, explicit curds CLI requests, or when the user wants the local `curds` CLI to generate images, edit/reference images, create videos, generate music, sound effects, or spoken audio (text to speech), remove image backgrounds, or upscale images through OpenAI, Replicate, or ElevenLabs.
 model: haiku
 ---
 
@@ -20,7 +20,7 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   requested or clearly appropriate.
 - Never print, paste, commit, or summarize API tokens. Auth resolves from
   `~/.config/curds/config.toml` (or `$CURDS_CONFIG`), `.env`, or
-  `OPENAI_API_KEY`/`REPLICATE_API_TOKEN`; only pass `-token` when the user
+  `OPENAI_API_KEY`/`REPLICATE_API_TOKEN`/`ELEVENLABS_API_KEY`; only pass `-token` when the user
   explicitly provides or authorizes one, and don't inspect config/`.env` files
   without a clear auth-debugging need.
 - Provider: `-provider openai` for image generation and edits (`gpt-image-2.5`,
@@ -55,6 +55,16 @@ the generation prompt — do not rewrite it, expand scope, or launch extra jobs.
   `tts-openai` only). Read the text from `-prompt` or stdin. Gemini and
   ElevenLabs return wav/mp3 respectively and curds transcodes to the
   requested container.
+- ElevenLabs direct: when an ElevenLabs key is configured, `-model
+  tts-elevenlabs` and `-model music` call the ElevenLabs API instead of
+  Replicate (the log says `event=elevenlabs.route route=direct`). There
+  `-voice` is any voice id or an account voice name (default George;
+  Replicate's `Rachel` is not available), audio tags like `[whispers]` ARE
+  interpreted, `-tts-model` picks the model (default `eleven_v4`, which takes
+  only `-stability` / `-similarity`; `eleven_multilingual_v2` also takes
+  `-style` / `-speed` / `-speaker-boost`), and music takes `-duration` 3–600.
+  Find a voice with `curds voices`. `-provider replicate` forces the
+  Replicate route.
 
 ## Commands
 
@@ -80,9 +90,13 @@ curds -no-tui -model sfx -duration 8 -prompt "$PROMPT" -output "$OUT.wav"
 # Text to speech (only when asked; delivery goes in the flags)
 curds -no-tui -model tts -voice Kore -instructions "warm and slow, British accent" -prompt "$PROMPT" -output "$OUT.wav"
 curds -no-tui -model tts-minimax -voice English_Wiselady -emotion calm -prompt "$PROMPT" -output "$OUT.mp3"
-curds -no-tui -model tts-elevenlabs -voice Rachel -style 0.8 -prompt "$PROMPT" -output "$OUT.mp3"
+curds -no-tui -provider replicate -model tts-elevenlabs -voice Rachel -style 0.8 -prompt "$PROMPT" -output "$OUT.mp3"
 curds -no-tui -model tts-openai -voice sage -instructions "crisp British RP, dry" -prompt "$PROMPT" -output "$OUT.wav"
 cat script.txt | curds -no-tui -model tts-minimax -output "$OUT.wav"
+
+# ElevenLabs direct (needs an ElevenLabs key): find a voice, then speak with it
+curds voices -search narrator -accent british -gender female
+curds -no-tui -model tts-elevenlabs -voice VOICE_ID -stability 0.4 -prompt "$PROMPT" -output "$OUT.mp3"
 
 # Background removal (transparent PNG cutout)
 curds -no-tui -provider replicate -model remove-bg -input-image photo.jpg -output cutout.png
@@ -122,4 +136,6 @@ Only when the request needs something beyond the commands above — custom
 Grok/Seedance duration-resolution-aspect matrices, Seedance-only flags,
 `-instrumental` / `-lyrics` / audio containers, the music-vocal local trim,
 `-voice` / `-emotion` / `-speed` / `-pitch` / `-instructions` / `-stability` /
-`-style` — read `reference.md` in this skill directory.
+`-style`, the ElevenLabs direct route (`-tts-model` / `-similarity` /
+`-speaker-boost`, `curds voices`) — read `reference.md` in this skill
+directory.

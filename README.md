@@ -11,7 +11,8 @@ Seedance 2.5 and Grok Imagine Video 1.5 (video), Kling 3.0, ElevenLabs Music
 (`-model sfx`) for sound effects, Gemini 3.1 Flash TTS (`-model tts`),
 MiniMax Speech 2.8 HD (`-model tts-minimax`) and ElevenLabs v3
 (`-model tts-elevenlabs`) for text-to-speech (OpenAI's gpt-4o-mini-tts via
-`-model tts-openai`), and the talking-head pair Kling Avatar 2.0
+`-model tts-openai`; with an ElevenLabs key, `-model tts-elevenlabs` and
+`-model music` call the ElevenLabs API directly), and the talking-head pair Kling Avatar 2.0
 (`-model kling-avatar`) and Sync Labs lipsync-2-pro (`-model lipsync`). Also
 wraps Replicate's `bria/remove-background`
 for one-shot transparent-PNG cutouts (`-model remove-bg`) and
@@ -111,10 +112,22 @@ Resolution priority (first non-empty wins):
 1. `-token` flag
 2. `[tokens]` section of `~/.config/curds/config.toml`
 3. `.env` in the current working directory
-4. process environment (`OPENAI_API_KEY`, `REPLICATE_API_TOKEN`)
+4. process environment (`OPENAI_API_KEY`, `REPLICATE_API_TOKEN`,
+   `XAI_API_KEY`, `ELEVENLABS_API_KEY`)
 
 If no token is found at startup, curds opens the TUI and offers to capture
 one and (optionally) save it to the config.
+
+The ElevenLabs key is optional. Add it to the config:
+
+```toml
+[tokens]
+elevenlabs = "sk_..."
+```
+
+or export `ELEVENLABS_API_KEY` (or put it in `.env`). With it,
+`-model tts-elevenlabs` and `-model music` run on the ElevenLabs API instead
+of Replicate; see [ElevenLabs direct](#elevenlabs-direct).
 
 ## Providers
 
@@ -122,7 +135,7 @@ curds auto-selects the provider based on which token is available, with
 OpenAI preferred for images when both are set. For MP4 output with no `-model`,
 curds uses `default_video_model` (Replicate-hosted Seedance 2.5), falling back
 to the native xAI provider when no `replicate` token is available but an `xai`
-token is. Override with `-provider openai|replicate|xai` or by setting
+token is. Override with `-provider openai|replicate|xai|elevenlabs` or by setting
 `provider` in the config file. When `-provider` is set and `-model` is
 omitted, curds uses that provider's default from the table below rather
 than `config.default_model`. An incompatible `-provider`/`-model` pair is
@@ -134,6 +147,11 @@ supports.
 | openai    | `gpt-image-2.5` (`gpt-image-2.5-flare`; Sunburst via `-model gpt-image-2.5-sunburst`); speech: `gpt-4o-mini-tts` (`-model tts-openai`), `tts-1-hd` | `/v1/images/generations` (or `/v1/images/edits` with `-input-image`); `/v1/audio/speech` for TTS |
 | replicate | image: `openai/gpt-image-2`; video: `bytedance/seedance-2.5` (`bytedance/seedance-2.0` via `-model seedance-2`; talking heads: `kwaivgi/kling-avatar-v2`, `sync/lipsync-2-pro`); audio: `elevenlabs/music`, `minimax/music-2.6`, `stability-ai/stable-audio-2.5`; speech: `google/gemini-3.1-flash-tts`, `minimax/speech-2.8-hd`, `elevenlabs/v3`; upscale: `prunaai/p-image-upscale`, `nightmareai/real-esrgan`, `topazlabs/image-upscale` | `/v1/models/<owner>/<name>/predictions` (sync via `Prefer: wait`); `curds run` posts raw inputs to the same endpoint |
 | xai       | video: `grok-imagine-video` | `POST /v1/videos/generations` + `GET /v1/videos/{request_id}` (async polling) |
+| elevenlabs | speech: `eleven_v4` (`-tts-model` to change); music: `music_v2_5`. Picked automatically for `-model tts-elevenlabs` / `-model music` when an elevenlabs token resolves | `POST /v1/text-to-speech/{voice_id}`, `POST /v1/music`; `curds voices` reads `GET /v2/voices` and `GET /v1/shared-voices` |
+
+ElevenLabs is never auto-detected as the general provider: it serves only
+those two models, and `-provider replicate` keeps them on Replicate even when
+the key is set.
 
 ## Editing / composing with reference images
 
@@ -413,6 +431,8 @@ Three Replicate audio models are wired in, all prompt-driven, saving `mp3` or
   A score, cue, or loop from `-prompt`, instrumental by default
   (`-instrumental=false` for vocals), and it honors the requested length
   exactly: `-duration` 5–300s (default 10) goes upstream as `music_length_ms`.
+  With an ElevenLabs key it runs on the ElevenLabs API instead
+  (`music_v2_5`, `-duration` 3–600s); see [ElevenLabs direct](#elevenlabs-direct).
 - `music-vocal` — **MiniMax Music 2.6** (`minimax/music-2.6`, alias
   `minimax-music`). A full song with vocals. `-prompt` sets the style;
   `-lyrics TEXT` or `-lyrics @song.txt` supplies the words (newlines and
@@ -477,7 +497,9 @@ Four TTS models read `-prompt` (or stdin) aloud, all saving `mp3` or `wav`:
   the voice. `-voice` picks from the enum (default `Rachel`). The text is read
   verbatim: bracketed emotion markers in it are spoken aloud rather than
   interpreted, because the Replicate deployment does not parse them. It
-  returns mp3; a `.wav` output is transcoded locally via ffmpeg.
+  returns mp3; a `.wav` output is transcoded locally via ffmpeg. With an
+  ElevenLabs key it runs on the ElevenLabs API instead, where any voice id
+  works and audio tags are interpreted; see [ElevenLabs direct](#elevenlabs-direct).
 - `tts-openai` — **OpenAI gpt-4o-mini-tts**, served by the `openai` provider's
   `POST /v1/audio/speech`. `-instructions` steers accent and tone (`"crisp
   British RP, dry"`); `-voice` picks from the OpenAI enum (default `sage`).
@@ -493,8 +515,8 @@ curds -model tts -voice Kore -instructions "warm and slow, British accent" \
 curds -model tts-minimax -voice English_Deep-VoicedGentleman -emotion calm \
       -prompt "Chapter one. The rain had not stopped for a week." -output /tmp/line.mp3
 
-# ElevenLabs v3 with stability/style (the text is read verbatim)
-curds -model tts-elevenlabs -voice Rachel -style 0.8 \
+# ElevenLabs v3 on Replicate with stability/style (the text is read verbatim)
+curds -provider replicate -model tts-elevenlabs -voice Rachel -style 0.8 \
       -prompt "Oh, brilliant. Another Monday." -output /tmp/line.mp3
 
 # OpenAI with delivery instructions
@@ -507,7 +529,8 @@ cat script.txt | curds -model tts-minimax -output /tmp/narration.wav
 
 Notes:
 
-- `tts`, `tts-minimax`, and `tts-elevenlabs` need a Replicate token;
+- `tts`, `tts-minimax`, and `tts-elevenlabs` need a Replicate token
+  (`tts-elevenlabs` uses an ElevenLabs key instead when one is set);
   `tts-openai`/`tts-1-hd` need an OpenAI token. An explicit incompatible
   `-provider`/`-model` pair is rejected locally.
 - `-voice` is validated against the enum for `tts`, `tts-elevenlabs`, and the
@@ -530,6 +553,79 @@ Sarah, James, Jane, Juniper, Arabella, Hope, Bradford, Reginald, Gaming,
 Austin, Kuon, Blondie, Priyanka, Alexandra, Monika, Mark, Grimblewood.
 OpenAI voices: alloy, ash, ballad, coral, echo, fable, onyx, nova, sage,
 shimmer, verse, marin, cedar.
+
+## ElevenLabs direct
+
+With an ElevenLabs key (`[tokens] elevenlabs` in the config, `.env`, or
+`ELEVENLABS_API_KEY`), `-model tts-elevenlabs` and `-model music` call the
+ElevenLabs API directly. Without one they run on Replicate exactly as
+described above, and `-provider replicate` keeps them there even with a key.
+Every run logs the route it took:
+
+```
+event=elevenlabs.route route=direct model=eleven_v4 reason="elevenlabs token"
+event=elevenlabs.route route=replicate model=elevenlabs/v3 reason="no elevenlabs token"
+```
+
+**Text to speech** (`POST /v1/text-to-speech/{voice_id}`):
+
+- `-tts-model` picks the ElevenLabs `model_id`. The default is `eleven_v4`,
+  ElevenLabs' highest-quality model. `eleven_v4_turbo`, `eleven_v3`,
+  `eleven_multilingual_v2`, and `eleven_flash_v2_5` are also available.
+- `-voice` is any voice id (your account's, a premade, or one from the shared
+  library), or the name of a voice in your account, resolved through
+  `GET /v2/voices`. Premade names carry a tagline ("George - Warm, Captivating
+  Storyteller"), so `-voice George` matches; an exact full name wins. The
+  default is George (`JBFqnCBsd6RMkjVDRZzb`). Rachel and the rest of the
+  Replicate enum are legacy voices that current accounts no longer list, so
+  `-voice Rachel` fails here with a pointer to `curds voices`. Using a
+  library voice id makes ElevenLabs add that voice to your account.
+- **Audio tags are interpreted** on `eleven_v4` and `eleven_v3`:
+  `[whispers]`, `[laughs]`, `[sighs]`, `[strong French accent]` direct the
+  delivery instead of being read aloud. Replicate's `elevenlabs/v3` reads
+  them aloud, so the same script sounds different on the two routes.
+- Voice settings depend on the model: `-stability` works everywhere;
+  `-similarity` everywhere but `eleven_v3`; `-style` and `-speaker-boost`
+  only on `eleven_multilingual_v2`; `-speed` (0.7–1.2) on
+  `eleven_multilingual_v2` and `eleven_flash_v2_5`. A setting the model does
+  not take is a usage error that names `-tts-model eleven_multilingual_v2`.
+  `-instructions`, `-emotion`, and `-pitch` do not apply.
+- Text caps: `eleven_v4` 10000 characters, `eleven_v3` 5000.
+- mp3 asks for `mp3_44100_192` and steps down to `mp3_44100_128` when the
+  plan refuses it (192 kbps needs the Creator tier). wav asks for
+  `wav_44100` (Pro tier), then `wav_24000`. Each step logs
+  `event=elevenlabs.format_fallback`.
+
+**Music** (`POST /v1/music`): `model_id` `music_v2_5`, `-prompt`,
+`force_instrumental` from `-instrumental` (default true), and
+`music_length_ms` from `-duration` (3–600s; omit it and the model picks the
+length). mp3 asks for `mp3_48000_320`, then 192 kbps, then
+`mp3_44100_128`. The endpoint has no wav, so a `.wav` output is transcoded
+locally via ffmpeg.
+
+**Finding a voice**: `curds voices` lists your account's voices
+(`GET /v2/voices`) and searches the shared library (`GET /v1/shared-voices`),
+one logfmt line per voice with `source`, `id`, `name`, `accent`, `age`,
+`gender`, and `description`. `-search`, `-accent`, `-gender`, and `-age`
+filter both lists server-side; `-source account|library` picks one;
+`-limit` sets the page size (default 30, max 100).
+
+```bash
+# Find a British female narrator, then use her
+curds voices -search narrator -accent british -gender female
+curds -model tts-elevenlabs -voice 3XD5qTvPWht0mpTnYXY0 -stability 0.4 \
+      -prompt "[whispers] It was a very long day." -output /tmp/line.mp3
+
+# eleven_multilingual_v2 for the full set of voice settings
+curds -model tts-elevenlabs -tts-model eleven_multilingual_v2 -voice George \
+      -style 0.3 -speed 1.1 -speaker-boost -prompt "Chapter one." -output /tmp/ch1.mp3
+
+# Ten minutes of score on the direct route
+curds -model music -duration 600 -prompt "slow ambient synth score" -output /tmp/score.mp3
+
+# Keep the Replicate route even with a key
+curds -provider replicate -model tts-elevenlabs -voice Rachel -prompt "Hi." -output /tmp/hi.mp3
+```
 
 ## Raw Replicate passthrough (`curds run`)
 
@@ -699,6 +795,9 @@ compression = 90
 
 [tokens]
 openai = ""
+replicate = ""
+xai = ""
+elevenlabs = ""                 # optional: direct ElevenLabs TTS and music
 
 [defaults]
 quality = "auto"
@@ -807,6 +906,10 @@ Run `curds -h` for the full list. Highlights:
 - `-voice` / `-emotion` / `-speed` / `-pitch` / `-instructions` / `-stability`
   / `-style` — text-to-speech controls (`-model tts`, `tts-minimax`,
   `tts-elevenlabs`, `tts-openai`)
+- `-tts-model` / `-similarity` / `-speaker-boost` — direct ElevenLabs route
+  only (`-model tts-elevenlabs` with an ElevenLabs key)
+- `curds voices [-search TEXT] [-accent A] [-gender G] [-age A]` — list account
+  voices and search the ElevenLabs voice library
 - `-scale` / `-face-enhance` — upscale factor and face restoration (`-model
   upscale-esrgan` / `upscale-pro`; `-face-enhance` is rejected by `-model
   upscale`)
@@ -820,9 +923,11 @@ Run `curds -h` for the full list. Highlights:
 ```
 .
 ├── cmd/curds/main.go      package main — CLI shell
+├── cmd/curds/voices.go    package main — the `curds voices` subcommand
 ├── client.go              package curds — Client, Request, Result, providers
 ├── openai.go              ↑ OpenAI Image API impl
 ├── replicate.go           ↑ Replicate API impl
+├── elevenlabs.go          ↑ ElevenLabs API impl (direct TTS, music, voices)
 ├── log.go                 ↑ shared logfmt + lipgloss formatter
 ├── curds_test.go          ↑ unit + httptest integration tests
 ├── config/                package config — TOML, .env, token resolution

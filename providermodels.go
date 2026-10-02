@@ -41,6 +41,15 @@ var providerModels = map[string]providerModelSpec{
 		Default:   DefaultXaiVideoModel,
 		Supported: []string{DefaultXaiVideoModel},
 	},
+	// The direct ElevenLabs route: -model tts-elevenlabs (any eleven_* model
+	// id via -tts-model) and -model music (music_v*).
+	ProviderElevenLabs: {
+		Default:   DefaultElevenLabsTTSModel,
+		Supported: []string{"tts-elevenlabs", "music"},
+		aliases: []string{
+			DefaultElevenLabsMusicModel,
+		},
+	},
 	ProviderReplicate: {
 		Default: DefaultReplicateModel,
 		Supported: []string{
@@ -147,6 +156,11 @@ func modelCompatible(provider, model string) bool {
 	// Replicate accepts any owner/name identifier (documented passthrough
 	// for models curds does not wrap first-class).
 	if provider == ProviderReplicate && replicateOwnerName(m) {
+		return true
+	}
+	// ElevenLabs accepts any of its own TTS (eleven_*) or music (music_v*)
+	// model ids, so a newer one works through -tts-model before curds lists it.
+	if provider == ProviderElevenLabs && (IsElevenLabsDirectTTSModel(m) || IsElevenLabsDirectMusicModel(m)) {
 		return true
 	}
 	return false

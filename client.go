@@ -1,9 +1,10 @@
 // Package curds generates images and videos via generation providers.
 //
 // Supported providers:
-//   - openai    (direct OpenAI Image API; default model gpt-image-2.5-flare)
-//   - replicate (Replicate-hosted models; default openai/gpt-image-2)
-//   - xai       (native xAI video API; model grok-imagine-video)
+//   - openai     (direct OpenAI Image API; default model gpt-image-2.5-flare)
+//   - replicate  (Replicate-hosted models; default openai/gpt-image-2)
+//   - xai        (native xAI video API; model grok-imagine-video)
+//   - elevenlabs (direct ElevenLabs API; text to speech and music)
 //
 // The package is transport-agnostic and intended to be reusable from a CLI,
 // HTTP service, or background worker.
@@ -24,9 +25,10 @@ import (
 )
 
 const (
-	ProviderReplicate = "replicate"
-	ProviderOpenAI    = "openai"
-	ProviderXai       = "xai"
+	ProviderReplicate  = "replicate"
+	ProviderOpenAI     = "openai"
+	ProviderXai        = "xai"
+	ProviderElevenLabs = "elevenlabs"
 
 	DefaultReplicateModel = "openai/gpt-image-2"
 	DefaultOpenAIModel    = GPTImage25Model
@@ -140,6 +142,25 @@ const (
 	// POST /v1/audio/speech. It has no -instructions knob. Selectable via
 	// -model tts-1-hd.
 	TTS1HDModel = "tts-1-hd"
+
+	// DefaultElevenLabsTTSModel is the model_id the direct ElevenLabs route
+	// sends for -model tts-elevenlabs when -tts-model is omitted: Eleven v4,
+	// ElevenLabs' highest-quality TTS model (GET /v1/models; "Eleven v4" in
+	// the ElevenLabs models overview). It takes stability and similarity only:
+	// no style, speed, or speaker boost.
+	DefaultElevenLabsTTSModel = "eleven_v4"
+
+	// DefaultElevenLabsMusicModel is the model_id the direct ElevenLabs route
+	// sends for -model music: "our most advanced music model" per the
+	// ElevenLabs models overview. POST /v1/music defaults to music_v1, so it is
+	// always sent explicitly.
+	DefaultElevenLabsMusicModel = "music_v2_5"
+
+	// DefaultElevenLabsVoiceID is the voice the direct ElevenLabs route uses
+	// when -voice is omitted: George, the premade voice in ElevenLabs' own
+	// text-to-speech API reference. Replicate's default, Rachel, is a legacy
+	// voice that current accounts no longer list.
+	DefaultElevenLabsVoiceID = "JBFqnCBsd6RMkjVDRZzb"
 
 	// TTS defaults: the voice curds asks for when -voice is omitted, and the
 	// per-model text caps enforced before any network call.
@@ -290,12 +311,22 @@ type Request struct {
 	// instructions ("crisp British RP, dry"). Rejected by every other TTS
 	// model.
 	Instructions string
-	// Stability is elevenlabs/v3's voice stability, 0-1. nil = the model's own
-	// default (0.5). Rejected by the other TTS models.
+	// Stability is the ElevenLabs voice stability, 0-1, on Replicate's
+	// elevenlabs/v3 and on the direct route. nil = the model's own default
+	// (0.5). Rejected by the other TTS models.
 	Stability *float64
-	// Style is elevenlabs/v3's style exaggeration, 0-1. nil = the model's own
-	// default (0). Rejected by the other TTS models.
+	// Style is the ElevenLabs style exaggeration, 0-1. nil = the model's own
+	// default (0). On the direct route only models that take it (e.g.
+	// eleven_multilingual_v2) accept it. Rejected by the other TTS models.
 	Style *float64
+	// SimilarityBoost is the direct ElevenLabs route's similarity_boost, 0-1:
+	// how closely the output adheres to the voice. nil = the voice's stored
+	// setting. Rejected everywhere else.
+	SimilarityBoost *float64
+	// SpeakerBoost is the direct ElevenLabs route's use_speaker_boost. nil =
+	// the voice's stored setting. Only some models (e.g.
+	// eleven_multilingual_v2) take it; rejected everywhere else.
+	SpeakerBoost *bool
 	// Audio is the audio track for talking-head models (kling-avatar,
 	// lipsync): a file path, http(s) URL, or data URL.
 	Audio string
@@ -365,6 +396,7 @@ type Client struct {
 	Replicate  Provider
 	OpenAI     Provider
 	Xai        Provider
+	ElevenLabs Provider
 }
 
 // New constructs a Client with default providers wired to the public APIs.
@@ -375,6 +407,7 @@ func New() *Client {
 		Replicate:  &ReplicateProvider{HTTPClient: hc, APIBase: "https://api.replicate.com/v1"},
 		OpenAI:     &OpenAIProvider{HTTPClient: hc, APIBase: "https://api.openai.com/v1"},
 		Xai:        &XaiProvider{HTTPClient: hc, APIBase: "https://api.x.ai/v1"},
+		ElevenLabs: &ElevenLabsProvider{HTTPClient: hc, APIBase: DefaultElevenLabsAPIBase},
 	}
 }
 
@@ -408,6 +441,11 @@ func (c *Client) providerFor(name string) (Provider, error) {
 			return nil, errors.New("xai provider not configured")
 		}
 		return c.Xai, nil
+	case ProviderElevenLabs:
+		if c.ElevenLabs == nil {
+			return nil, errors.New("elevenlabs provider not configured")
+		}
+		return c.ElevenLabs, nil
 	}
 	return nil, fmt.Errorf("unsupported provider %q", name)
 }
@@ -478,7 +516,7 @@ func (r *Request) applyDefaults() {
 		case strings.TrimSpace(r.Lyrics) != "":
 			instrumental := false
 			r.Instrumental = &instrumental
-		case r.Instrumental == nil && IsMusicModel(r.Model):
+		case r.Instrumental == nil && (IsMusicModel(r.Model) || IsElevenLabsDirectMusicModel(r.Model)):
 			instrumental := true
 			r.Instrumental = &instrumental
 		case r.Instrumental == nil && IsMusicVocalModel(r.Model):
@@ -506,9 +544,9 @@ func (r *Request) Validate() error {
 		return errors.New("provider is required")
 	}
 	switch r.Provider {
-	case ProviderReplicate, ProviderOpenAI, ProviderXai:
+	case ProviderReplicate, ProviderOpenAI, ProviderXai, ProviderElevenLabs:
 	default:
-		return fmt.Errorf("unsupported provider %q (supported: openai, replicate, xai)", r.Provider)
+		return fmt.Errorf("unsupported provider %q (supported: openai, replicate, xai, elevenlabs)", r.Provider)
 	}
 	if err := CheckProviderModel(r.Provider, r.Model); err != nil {
 		return err
@@ -656,12 +694,16 @@ func (r *Request) lyricsOnlyMusic() bool {
 
 // validateAudio checks a request for the audio models (ElevenLabs Music,
 // MiniMax Music 2.6, Stable Audio 2.5). They are prompt-in/audio-out on
-// Replicate: no input media, no pixel size, no aspect ratio, one file per
-// request. Each accepts its own duration range, and -lyrics belongs to
-// music-vocal alone.
+// Replicate — or, for ElevenLabs Music, on the direct ElevenLabs route: no
+// input media, no pixel size, no aspect ratio, one file per request. Each
+// accepts its own duration range, and -lyrics belongs to music-vocal alone.
 func (r *Request) validateAudio() error {
-	if r.Provider != ProviderReplicate {
-		return fmt.Errorf("model %q is only supported with provider replicate", r.Model)
+	wantProvider := ProviderReplicate
+	if IsElevenLabsDirectMusicModel(r.Model) {
+		wantProvider = ProviderElevenLabs
+	}
+	if r.Provider != wantProvider {
+		return fmt.Errorf("model %q is only supported with provider %s", r.Model, wantProvider)
 	}
 	if r.NumImages != 1 {
 		return fmt.Errorf("audio generation produces exactly one file, got num_images=%d", r.NumImages)
@@ -686,6 +728,14 @@ func (r *Request) validateAudio() error {
 		}
 		if r.Duration != 0 && (r.Duration < 5 || r.Duration > 300) {
 			return fmt.Errorf("duration must be 5-300 seconds for ElevenLabs Music, got %g", r.Duration)
+		}
+	case IsElevenLabsDirectMusicModel(r.Model):
+		if strings.TrimSpace(r.Lyrics) != "" {
+			return errors.New("-lyrics is only supported by -model music-vocal (ElevenLabs Music renders instrumentals)")
+		}
+		if r.Duration != 0 && (r.Duration < MinElevenLabsMusicSeconds || r.Duration > MaxElevenLabsMusicSeconds) {
+			return fmt.Errorf("duration must be %d-%d seconds for ElevenLabs Music on the direct route, got %g",
+				MinElevenLabsMusicSeconds, MaxElevenLabsMusicSeconds, r.Duration)
 		}
 	case IsMusicVocalModel(r.Model):
 		if strings.TrimSpace(r.Prompt) == "" && strings.TrimSpace(r.Lyrics) == "" {
@@ -752,13 +802,16 @@ var MinimaxTTSEmotions = map[string]bool{
 
 // DefaultVoiceFor returns the voice curds asks a TTS model for when -voice is
 // omitted: Gemini's Kore, MiniMax's warm English system voice, ElevenLabs'
-// Rachel, or OpenAI's sage.
+// Rachel on Replicate (George's voice id on the direct route), or OpenAI's
+// sage.
 func DefaultVoiceFor(model string) string {
 	switch {
 	case IsTTSGeminiModel(model):
 		return DefaultTTSGeminiVoice
 	case IsTTSElevenLabsModel(model):
 		return DefaultTTSElevenLabsVoice
+	case IsElevenLabsDirectTTSModel(model):
+		return DefaultElevenLabsVoiceID
 	case IsOpenAITTSModel(model):
 		return DefaultTTSOpenAIVoice
 	default:
@@ -798,6 +851,9 @@ func (r *Request) validateTTS() error {
 	if len(r.InputImages) > 0 || r.LastFrameImage != "" || r.InputVideo != "" ||
 		len(r.ReferenceImages) > 0 || len(r.ReferenceVideos) > 0 || len(r.ReferenceAudios) > 0 {
 		return errors.New("text-to-speech takes no input media; it reads -prompt (or stdin)")
+	}
+	if (r.SimilarityBoost != nil || r.SpeakerBoost != nil) && !IsElevenLabsDirectTTSModel(r.Model) {
+		return errors.New(errDirectOnlySettings)
 	}
 	switch {
 	case IsTTSGeminiModel(r.Model):
@@ -871,6 +927,28 @@ func (r *Request) validateTTS() error {
 		}
 		if r.Instructions != "" {
 			return errors.New("-instructions is only supported by -model tts (Gemini 3.1 Flash TTS) and -model tts-openai (gpt-4o-mini-tts)")
+		}
+	case IsElevenLabsDirectTTSModel(r.Model):
+		if r.Provider != ProviderElevenLabs {
+			return fmt.Errorf("model %q is only supported with provider elevenlabs", r.Model)
+		}
+		if strings.TrimSpace(r.Voice) == "" {
+			return errors.New("voice is required for the direct ElevenLabs route")
+		}
+		if max := ElevenLabsMaxChars(r.Model); max > 0 && utf8.RuneCountInString(r.Prompt) > max {
+			return fmt.Errorf("text is %d characters; %s accepts at most %d", utf8.RuneCountInString(r.Prompt), r.Model, max)
+		}
+		if err := CheckElevenLabsVoiceSettings(r.Model, r.Stability, r.SimilarityBoost, r.Style, r.Speed, r.SpeakerBoost != nil); err != nil {
+			return err
+		}
+		if r.Emotion != "" {
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if r.Pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if r.Instructions != "" {
+			return errors.New("-instructions is not supported on the direct ElevenLabs route; put audio tags such as [whispers] in the text instead")
 		}
 	case IsOpenAITTSModel(r.Model):
 		if r.Provider != ProviderOpenAI {
@@ -1640,12 +1718,31 @@ func IsOpenAITTSModel(model string) bool {
 	return IsOpenAITTSMiniModel(model) || matchesReplicateModel(model, TTS1HDModel)
 }
 
+// IsElevenLabsDirectTTSModel reports whether model is an ElevenLabs API
+// text-to-speech model_id (eleven_v4, eleven_v3, eleven_multilingual_v2, …),
+// the model the direct ElevenLabs route runs for -model tts-elevenlabs. Every
+// ElevenLabs TTS model id starts with "eleven_"; a non-TTS one (a voice
+// changer) is left for the API to reject.
+func IsElevenLabsDirectTTSModel(model string) bool {
+	m := strings.TrimSpace(strings.ToLower(model))
+	return strings.HasPrefix(m, "eleven_") && len(m) > len("eleven_") && !strings.Contains(m, "/")
+}
+
+// IsElevenLabsDirectMusicModel reports whether model is an ElevenLabs API
+// music model_id (music_v1, music_v2, music_v2_5), the model the direct
+// ElevenLabs route runs for -model music.
+func IsElevenLabsDirectMusicModel(model string) bool {
+	m := strings.TrimSpace(strings.ToLower(model))
+	return strings.HasPrefix(m, "music_v") && len(m) > len("music_v") && !strings.Contains(m, "/")
+}
+
 // IsTTSModel reports whether the resolved provider model is a text-to-speech
-// model: Gemini 3.1 Flash TTS, MiniMax Speech 2.8 HD, ElevenLabs v3, or an
-// OpenAI speech model.
+// model: Gemini 3.1 Flash TTS, MiniMax Speech 2.8 HD, ElevenLabs v3 (on
+// Replicate or direct), or an OpenAI speech model.
 func IsTTSModel(model string) bool {
 	return IsTTSGeminiModel(model) || IsTTSSpeechModel(model) ||
-		IsTTSElevenLabsModel(model) || IsOpenAITTSModel(model)
+		IsTTSElevenLabsModel(model) || IsElevenLabsDirectTTSModel(model) ||
+		IsOpenAITTSModel(model)
 }
 
 // IsAudioModel reports whether the resolved provider model produces audio
@@ -1654,7 +1751,8 @@ func IsTTSModel(model string) bool {
 // aspect ratio, no pixel size, and an mp3/wav output container. It covers the
 // music/sfx models and the text-to-speech models.
 func IsAudioModel(model string) bool {
-	return IsMusicModel(model) || IsMusicVocalModel(model) || IsSFXModel(model) || IsTTSModel(model)
+	return IsMusicModel(model) || IsElevenLabsDirectMusicModel(model) || IsMusicVocalModel(model) ||
+		IsSFXModel(model) || IsTTSModel(model)
 }
 
 // matchesReplicateModel reports whether model is base, optionally with a

@@ -1,6 +1,6 @@
 # Curds CLI — full parameter reference
 
-Written from `curds --help` for version `0.6.0`; if the installed help text
+Written from `curds --help` for version `0.7.0`; if the installed help text
 differs, prefer the current `curds --help` output.
 
 ## Output formats
@@ -229,8 +229,11 @@ Priyanka, Alexandra, Monika, Mark, Grimblewood (default Rachel). `-speed`
 mp3; `.wav` is transcoded locally.
 
 ```bash
-curds -no-tui -model tts-elevenlabs -voice Rachel -style 0.8 -prompt "$PROMPT" -output "$OUT.mp3"
+curds -no-tui -provider replicate -model tts-elevenlabs -voice Rachel -style 0.8 -prompt "$PROMPT" -output "$OUT.mp3"
 ```
+
+With an ElevenLabs key, `tts-elevenlabs` takes the direct route instead; see
+"ElevenLabs direct" below.
 
 `-model tts-openai` (`gpt-4o-mini-tts`, the OpenAI speech endpoint) and
 `-model tts-1-hd` (the earlier model, no `-instructions`). Text is capped at
@@ -250,6 +253,57 @@ applies to `tts-minimax` / `tts-elevenlabs` / `tts-openai` (Gemini has no
 speed knob); anything else is a usage error (exit 2). List MiniMax voices with
 `curds run -schema minimax/speech-2.8-hd` and Gemini voices with
 `curds run -schema google/gemini-3.1-flash-tts`.
+
+## ElevenLabs direct (only with an ElevenLabs key)
+
+When an ElevenLabs key resolves (`[tokens] elevenlabs` in the config, `.env`,
+or `ELEVENLABS_API_KEY`), `-model tts-elevenlabs` and `-model music` call the
+ElevenLabs API; without one they run on Replicate as above. `-provider
+replicate` forces Replicate even with a key. Every run logs
+`event=elevenlabs.route route=direct|replicate model=... reason=...`.
+
+Text to speech (`POST /v1/text-to-speech/{voice_id}`):
+
+- `-tts-model`: `eleven_v4` (default), `eleven_v4_turbo`, `eleven_v3`,
+  `eleven_multilingual_v2`, `eleven_flash_v2_5`. Usage error on the Replicate
+  route.
+- `-voice`: any voice id (account, premade, or shared library — ElevenLabs
+  adds a library voice to the account on first use), or an account voice
+  name ("George" matches "George - Warm, Captivating Storyteller"; an exact
+  full name wins). Default George (`JBFqnCBsd6RMkjVDRZzb`). `Rachel` and the
+  other Replicate enum names are legacy and fail here.
+- Audio tags (`[whispers]`, `[laughs]`, `[sighs]`, `[strong French accent]`)
+  are interpreted on `eleven_v4` / `eleven_v3`; Replicate's `elevenlabs/v3`
+  reads them aloud.
+- Settings: `-stability` 0–1 (all); `-similarity` 0–1 (all but `eleven_v3`);
+  `-style` 0–1 and `-speaker-boost` (`eleven_multilingual_v2`); `-speed`
+  0.7–1.2 (`eleven_multilingual_v2`, `eleven_flash_v2_5`). Anything the model
+  does not take is a usage error (exit 2). No `-instructions` / `-emotion` /
+  `-pitch`.
+- Text caps: `eleven_v4` 10000 characters, `eleven_v3` 5000.
+- Output: mp3 `mp3_44100_192`, stepping down to `mp3_44100_128` below the
+  Creator tier; wav `wav_44100`, stepping down to `wav_24000` below Pro
+  (`event=elevenlabs.format_fallback`).
+
+```bash
+curds -no-tui -model tts-elevenlabs -voice George -stability 0.4 -prompt "[whispers] $PROMPT" -output "$OUT.mp3"
+curds -no-tui -model tts-elevenlabs -tts-model eleven_multilingual_v2 -voice VOICE_ID -style 0.3 -speed 1.1 -speaker-boost -prompt "$PROMPT" -output "$OUT.mp3"
+```
+
+Music (`POST /v1/music`): `music_v2_5`, `-instrumental` (default true),
+`-duration` 3–600 (omit and the model picks the length), mp3 up to 320 kbps;
+a `.wav` output is transcoded locally.
+
+Finding voices:
+
+```bash
+curds voices -search narrator -accent british -gender female   # account + library
+curds voices -source account                                   # account only
+```
+
+Flags: `-search`, `-accent`, `-gender`, `-age`, `-source all|account|library`,
+`-limit` (default 30, max 100), `-token`, `-timeout`. One logfmt line per voice
+on stdout: `source`, `id`, `name`, `accent`, `age`, `gender`, `description`.
 
 ## Raw Replicate passthrough (`curds run`)
 
@@ -320,13 +374,14 @@ curds -no-tui -provider replicate -model upscale-esrgan -face-enhance -input-ima
 1. `-token`
 2. `~/.config/curds/config.toml` or `$CURDS_CONFIG`
 3. `.env` in the current directory
-4. `OPENAI_API_KEY` (OpenAI) / `REPLICATE_API_TOKEN` (Replicate)
+4. `OPENAI_API_KEY` (OpenAI) / `REPLICATE_API_TOKEN` (Replicate) /
+   `ELEVENLABS_API_KEY` (ElevenLabs direct)
 
 Text-to-speech and music/sound-effect models bind to the provider that runs
 them (`tts`/`tts-minimax`/`tts-elevenlabs`/`music`/`sfx` → Replicate,
-`tts-openai`/`tts-1-hd` → OpenAI), so an explicit incompatible
-`-provider`/`-model` pair is rejected locally.
+`tts-openai`/`tts-1-hd` → OpenAI; `tts-elevenlabs`/`music` → ElevenLabs when
+an ElevenLabs key is set), so an explicit incompatible `-provider`/`-model`
+pair is rejected locally.
 
 If both provider tokens are present and `-provider` is omitted, curds prefers
-OpenAI. `curds` has no `--version` flag; the startup log printed by
-`curds --help` includes the version.
+OpenAI. `curds -version` prints the version.

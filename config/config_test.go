@@ -388,3 +388,57 @@ func TestDefaultTOMLParses(t *testing.T) {
 		t.Errorf("output directory missing after parse")
 	}
 }
+
+// The elevenlabs token follows the same config > .env > env chain as the
+// others, under ELEVENLABS_API_KEY.
+func TestResolveTokenElevenLabs(t *testing.T) {
+	cfg := &Config{Tokens: TokensConfig{ElevenLabs: "from-config"}}
+	dotenv := map[string]string{"ELEVENLABS_API_KEY": "from-env-file"}
+	getenv := func(k string) string {
+		if k == "ELEVENLABS_API_KEY" {
+			return "from-process-env"
+		}
+		return ""
+	}
+	if got := ResolveToken("elevenlabs", cfg, dotenv, getenv); got != "from-config" {
+		t.Errorf("config should win, got %q", got)
+	}
+	cfg.Tokens.ElevenLabs = ""
+	if got := ResolveToken("elevenlabs", cfg, dotenv, getenv); got != "from-env-file" {
+		t.Errorf(".env should beat the process env, got %q", got)
+	}
+	if got := ResolveToken("elevenlabs", cfg, nil, getenv); got != "from-process-env" {
+		t.Errorf("process env as last resort, got %q", got)
+	}
+	if got := ResolveToken("elevenlabs", cfg, nil, func(string) string { return "" }); got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+// An elevenlabs token alone never makes ElevenLabs the general provider: it
+// serves two models, picked per model by the CLI.
+func TestDetectProviderIgnoresElevenLabs(t *testing.T) {
+	cfg := &Config{Tokens: TokensConfig{ElevenLabs: "k"}}
+	if got := DetectProvider(cfg, nil, func(string) string { return "" }); got != "" {
+		t.Errorf("elevenlabs must not be auto-detected, got %q", got)
+	}
+}
+
+// The default config ships an empty [tokens] elevenlabs entry, and a file
+// that sets it parses into Tokens.ElevenLabs.
+func TestElevenLabsTokenInConfigFile(t *testing.T) {
+	if !strings.Contains(DefaultTOML, "elevenlabs = \"\"") {
+		t.Error("DefaultTOML is missing the [tokens] elevenlabs entry")
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[tokens]\nelevenlabs = \"sk_test\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadOrCreateAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Tokens.ElevenLabs != "sk_test" {
+		t.Errorf("Tokens.ElevenLabs: %q", cfg.Tokens.ElevenLabs)
+	}
+}

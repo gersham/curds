@@ -39,7 +39,7 @@ import (
 var newClient = curds.New
 
 // version is the curds release version, reported by the curds.start log event.
-const version = "0.6.0"
+const version = "0.7.0"
 
 // imageList accepts both repeated flags and comma-separated values.
 type imageList []string
@@ -102,6 +102,12 @@ type cliOptions struct {
 	instructions      string
 	stability         float64 // TTS: -1 = model default
 	style             float64 // TTS: -1 = model default
+	similarity        float64 // direct ElevenLabs TTS similarity_boost
+	similaritySet     bool    // -similarity was passed
+	speakerBoost      bool
+	speakerBoostSet   bool   // -speaker-boost was passed (either value)
+	ttsModel          string // direct ElevenLabs TTS model_id (-tts-model)
+	directModel       string // model id the direct ElevenLabs route sends; "" = not on it
 	pollInterval      time.Duration
 	timeout           time.Duration
 	verbose           bool
@@ -134,6 +140,10 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	// its own flags and never touches the generation pipeline below.
 	if len(os.Args) > 1 && os.Args[1] == "run" {
 		return realMainRun(logger, start, os.Args[2:])
+	}
+	// `curds voices` lists ElevenLabs voices; it generates nothing.
+	if len(os.Args) > 1 && os.Args[1] == "voices" {
+		return realMainVoices(logger, start, os.Args[2:])
 	}
 
 	opts, err := parseFlags()
@@ -227,6 +237,12 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 		}
 	}
 
+	// -model tts-elevenlabs and -model music run on the ElevenLabs API itself
+	// when an elevenlabs token resolves, and on Replicate otherwise.
+	if err := selectElevenLabsRoute(opts, cfg, dotenv, logger); err != nil {
+		return err
+	}
+
 	// Resolve token if user didn't pass -token. CLI flag overrides everything.
 	token := opts.tokenFlag
 	if token == "" && opts.provider != "" {
@@ -237,6 +253,9 @@ func realMain(logger *logfmtLogger, start time.Time) error {
 	// like png-output for segmentation are applied to opts.outputFormat
 	// before we compute the default output path.
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
+	if opts.directModel != "" {
+		resolvedModel = opts.directModel
+	}
 	if err := curds.CheckProviderModel(opts.provider, resolvedModel); err != nil {
 		return &usageError{err: err}
 	}
@@ -440,6 +459,9 @@ func runInteractive(start time.Time, logger *logfmtLogger, opts *cliOptions, cfg
 
 	opts.provider = provider
 	resolvedModel := config.ResolveModel(cfg, opts.modelKey, opts.provider)
+	if opts.provider == curds.ProviderElevenLabs && opts.directModel != "" {
+		resolvedModel = opts.directModel
+	}
 	applyModelOutputDefaults(opts, cfg, resolvedModel, logger)
 
 	defaults := tui.Defaults{
@@ -606,6 +628,8 @@ func buildLibRequest(opts *cliOptions, token, model string, logger io.Writer) *c
 		Instructions:      opts.instructions,
 		Stability:         floatFlag(opts.stability, "stability"),
 		Style:             floatFlag(opts.style, "style"),
+		SimilarityBoost:   floatFlag(opts.similarity, "similarity"),
+		SpeakerBoost:      speakerBoostFlag(opts),
 		SyncMode:          opts.syncMode,
 		SyncTemperature:   opts.syncTemperature,
 		ActiveSpeaker:     opts.activeSpeaker,
@@ -714,7 +738,7 @@ func parseFlags() (*cliOptions, error) {
 	flag.CommandLine.Init("curds", flag.ContinueOnError)
 	flag.CommandLine.SetOutput(io.Discard)
 
-	flag.StringVar(&opts.provider, "provider", "", "Provider: openai, replicate, xai (default: from config or auto-detect)")
+	flag.StringVar(&opts.provider, "provider", "", "Provider: openai, replicate, xai, elevenlabs (default: from config or auto-detect; -model tts-elevenlabs / music pick elevenlabs when its token resolves)")
 	flag.StringVar(&opts.tokenFlag, "token", "", "Provider API token (overrides config/.env/env)")
 	flag.StringVar(&opts.modelKey, "model", "", "Model key from config (default: config.default_model, or config.default_video_model for mp4 output)")
 	flag.StringVar(&opts.prompt, "prompt", "", "Prompt text (reads stdin if omitted; otherwise launches TUI)")
@@ -751,14 +775,17 @@ func parseFlags() (*cliOptions, error) {
 	flag.BoolVar(&opts.noFallback, "no-fallback", false, "Disable the automatic Seedance→Kling 3.0 retry when Seedance rejects a face as sensitive")
 	flag.BoolVar(&opts.instrumental, "instrumental", true, "Music models: render an instrumental track (default: true for -model music, false for -model music-vocal; -lyrics implies vocals)")
 	flag.StringVar(&opts.lyrics, "lyrics", "", "Song lyrics for -model music-vocal: TEXT, or @file.txt (newlines and [Verse]/[Chorus] tags welcome)")
-	flag.Float64Var(&opts.duration, "duration", 0, "Audio length in seconds: -model music 5-300 (default 10); -model sfx 1-190 (default 10); -model music-vocal trims the render locally")
-	flag.StringVar(&opts.voice, "voice", "", "TTS voice: -model tts a Gemini voice from the enum (default Kore); -model tts-minimax any system or cloned voice id (default English_Wiselady); -model tts-elevenlabs / -model tts-openai a name from their enums (defaults Rachel / sage)")
+	flag.Float64Var(&opts.duration, "duration", 0, "Audio length in seconds: -model music 5-300 on Replicate, 3-600 on the direct ElevenLabs route; -model sfx 1-190 (default 10); -model music-vocal trims the render locally")
+	flag.StringVar(&opts.voice, "voice", "", "TTS voice: -model tts a Gemini voice from the enum (default Kore); -model tts-minimax any system or cloned voice id (default English_Wiselady); -model tts-elevenlabs any voice id or account voice name on the direct ElevenLabs route (default George), else a name from the Replicate enum (default Rachel); -model tts-openai a name from its enum (default sage)")
 	flag.StringVar(&opts.emotion, "emotion", "", "TTS delivery emotion for -model tts-minimax: auto, happy, sad, angry, fearful, disgusted, surprised, calm, fluent, neutral (default: auto)")
 	flag.Float64Var(&opts.speed, "speed", 0, "TTS speaking rate (0 = model default): -model tts-minimax 0.5-2; -model tts-elevenlabs 0.7-1.2; -model tts-openai 0.25-4. -model tts (Gemini) has no speed knob")
 	flag.IntVar(&opts.pitch, "pitch", 0, "TTS pitch shift in semitones for -model tts-minimax: -12..12 (default: 0)")
 	flag.StringVar(&opts.instructions, "instructions", "", "TTS delivery steering for -model tts (Gemini style prompt: tone, pace, accent) and -model tts-openai (gpt-4o-mini-tts), e.g. \"crisp British RP, dry\"")
 	flag.Float64Var(&opts.stability, "stability", -1, "TTS voice stability for -model tts-elevenlabs: 0-1 (default: 0.5)")
-	flag.Float64Var(&opts.style, "style", -1, "TTS style exaggeration for -model tts-elevenlabs: 0-1 (default: 0)")
+	flag.Float64Var(&opts.style, "style", -1, "TTS style exaggeration for -model tts-elevenlabs: 0-1 (default: 0; direct route: eleven_multilingual_v2 only)")
+	flag.Float64Var(&opts.similarity, "similarity", 0, "TTS similarity_boost for -model tts-elevenlabs on the direct ElevenLabs route: 0-1 (default: the voice's setting)")
+	flag.BoolVar(&opts.speakerBoost, "speaker-boost", false, "TTS use_speaker_boost for -model tts-elevenlabs on the direct ElevenLabs route (eleven_multilingual_v2); -speaker-boost=false turns it off")
+	flag.StringVar(&opts.ttsModel, "tts-model", "", "ElevenLabs model_id for -model tts-elevenlabs on the direct ElevenLabs route (default: "+curds.DefaultElevenLabsTTSModel+"; also eleven_v3, eleven_multilingual_v2, eleven_flash_v2_5)")
 	flag.Float64Var(&opts.scale, "scale", 0, "Upscale factor: -model upscale 1-8 (default: 4); -model upscale-esrgan 1-10 (default: 4); -model upscale-pro 2, 4, or 6")
 
 	flag.BoolVar(&opts.faceEnhance, "face-enhance", false, "Run GFPGAN face enhancement: -model upscale-esrgan or -model upscale-pro only")
@@ -798,6 +825,11 @@ func parseFlags() (*cliOptions, error) {
 	if opts.style < -1 || opts.style > 1 {
 		return nil, &usageError{err: fmt.Errorf("-style must be 0-1, got %v", opts.style)}
 	}
+	if opts.similarity < 0 || opts.similarity > 1 {
+		return nil, &usageError{err: fmt.Errorf("-similarity must be 0-1, got %v", opts.similarity)}
+	}
+	opts.similaritySet = flagWasSet("similarity")
+	opts.speakerBoostSet = flagWasSet("speaker-boost")
 	return opts, nil
 }
 
@@ -959,6 +991,7 @@ SYNOPSIS
   curds -prompt PROMPT [flags]
   echo PROMPT | curds [flags]
   curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]   (raw passthrough)
+  curds voices [-search TEXT] [-accent A] [-gender G]        (find ElevenLabs voices)
 
 DESCRIPTION
   Generates images using gpt-image-2.5 (default; gpt-image-2, FLUX.2 [pro] and
@@ -978,7 +1011,9 @@ DESCRIPTION
   ~/.config/curds/config.toml on first run. Drops into an interactive TUI
   when prompt or token is missing (suppress with -no-tui). The separate
   "curds run" subcommand drives any Replicate model with raw inputs; see
-  RUN SUBCOMMAND below or "curds run -h".
+  RUN SUBCOMMAND below or "curds run -h". With an ElevenLabs key,
+  -model tts-elevenlabs and -model music call the ElevenLabs API directly
+  instead of Replicate (see ELEVENLABS DIRECT); "curds voices" finds voices.
 
 PROVIDERS
   openai     OpenAI Image API direct   [recommended for OpenAI models]
@@ -1023,6 +1058,17 @@ PROVIDERS
              durations up to 15s. Video-only — no image generation.
              Used automatically for mp4 when no replicate token is set.
 
+  elevenlabs ElevenLabs API direct
+             Endpoints: POST /v1/text-to-speech/{voice_id}  (-model tts-elevenlabs)
+                        POST /v1/music                      (-model music)
+                        GET  /v2/voices, GET /v1/shared-voices (curds voices)
+             Default models: eleven_v4 (TTS; -tts-model to change),
+                             music_v2_5 (music)
+             Used automatically for -model tts-elevenlabs and -model music
+             whenever an elevenlabs token resolves; without one those two
+             models run on Replicate as before. -provider replicate forces
+             Replicate even with a token. See ELEVENLABS DIRECT.
+
   Provider auto-detect (when -provider is omitted):
     1. config.provider in ~/.config/curds/config.toml
     2. for mp4 output with no -model, config.default_video_model
@@ -1057,7 +1103,7 @@ TOKEN RESOLUTION (first non-empty wins)
   2. ~/.config/curds/config.toml [tokens] section
   3. .env file in cwd
   4. environment: OPENAI_API_KEY (openai), REPLICATE_API_TOKEN (replicate),
-     XAI_API_KEY (xai)
+     XAI_API_KEY (xai), ELEVENLABS_API_KEY (elevenlabs)
 
 EXIT CODES
   0  success
@@ -1084,7 +1130,8 @@ FLAGS
     -timeout  DURATION          overall timeout (default 10m, 0 disables)
 
   Provider & auth
-    -provider {openai|replicate|xai}  backend (default: auto-detect)
+    -provider {openai|replicate|xai|elevenlabs}
+                                      backend (default: auto-detect)
     -token    STRING                  API token (overrides config/.env/env)
     -model    KEY                     model key from config
                                       (default: config.default_model, or
@@ -1223,15 +1270,19 @@ FLAGS
   Music & sound effects (Replicate)
     -model music                 ElevenLabs Music (elevenlabs/music): a
                                  score or loop from -prompt, instrumental by
-                                 default, exact -duration.
+                                 default, exact -duration. Direct on the
+                                 ElevenLabs API (music_v2_5) when an
+                                 elevenlabs token resolves.
     -model music-vocal           MiniMax Music 2.6 (minimax/music-2.6): a
                                  full song with vocals. Add -lyrics (alias
                                  -model minimax-music).
     -model sfx                   Stable Audio 2.5
                                  (stability-ai/stable-audio-2.5): sound
                                  effects, ambience, short cues, 1-190s.
-    -duration SECONDS            -model music: 5-300 (default 10), sent as
-                                 music_length_ms. -model sfx: 1-190 (default
+    -duration SECONDS            -model music: 5-300 on Replicate, 3-600 on
+                                 the direct ElevenLabs route, sent as
+                                 music_length_ms (omit it and the model picks
+                                 the length). -model sfx: 1-190 (default
                                  10). -model music-vocal ignores length
                                  upstream (2-3 min renders), so curds trims
                                  the result to -duration with a 2s fade-out
@@ -1260,7 +1311,10 @@ FLAGS
     -model tts-elevenlabs        ElevenLabs v3 (elevenlabs/v3) on Replicate:
                                  -voice, -stability, and -style. The text is
                                  read verbatim — bracketed markers in it are
-                                 spoken aloud, not interpreted.
+                                 spoken aloud, not interpreted. With an
+                                 elevenlabs token it runs on the ElevenLabs
+                                 API instead (eleven_v4 by default): any
+                                 voice id, and audio tags ARE interpreted.
     -model tts-openai            OpenAI gpt-4o-mini-tts via the openai
                                  provider: accepts -instructions
                                  ("crisp British RP, dry"). -model tts-1-hd
@@ -1271,15 +1325,20 @@ FLAGS
                                  tts-elevenlabs, sage for -model tts-openai).
                                  -model tts-minimax takes any system voice
                                  or cloned id; the others validate against
-                                 their enums (see TEXT TO SPEECH).
+                                 their enums (see TEXT TO SPEECH). On the
+                                 direct ElevenLabs route -voice is any voice
+                                 id, or a name from your account (default
+                                 George, JBFqnCBsd6RMkjVDRZzb).
     -emotion VALUE               -model tts-minimax only: auto, happy, sad,
                                  angry, fearful, disgusted, surprised, calm,
                                  fluent, neutral (default: auto).
     -speed N                     speaking rate (0 = model default):
                                  -model tts-minimax 0.5-2; -model
-                                 tts-elevenlabs 0.7-1.2; -model tts-openai
-                                 0.25-4. -model tts (Gemini) has no speed
-                                 knob; steer pace with -instructions.
+                                 tts-elevenlabs 0.7-1.2 (direct route:
+                                 eleven_multilingual_v2 / flash only);
+                                 -model tts-openai 0.25-4. -model tts
+                                 (Gemini) has no speed knob; steer pace
+                                 with -instructions.
     -pitch N                     -model tts-minimax only: shift in semitones,
                                  -12..12 (default: 0).
     -instructions TEXT           style/delivery steering for -model tts
@@ -1289,7 +1348,18 @@ FLAGS
     -stability N                 -model tts-elevenlabs only: voice stability
                                  0-1 (default: 0.5).
     -style N                     -model tts-elevenlabs only: style
-                                 exaggeration 0-1 (default: 0).
+                                 exaggeration 0-1 (default: 0). Direct
+                                 route: eleven_multilingual_v2 only.
+    -similarity N                direct ElevenLabs route only:
+                                 similarity_boost 0-1 (default: the voice's
+                                 setting). Not on eleven_v3.
+    -speaker-boost               direct ElevenLabs route only:
+                                 use_speaker_boost (eleven_multilingual_v2);
+                                 -speaker-boost=false turns it off.
+    -tts-model ID                direct ElevenLabs route only: the model_id
+                                 (default eleven_v4; also eleven_v4_turbo,
+                                 eleven_v3, eleven_multilingual_v2,
+                                 eleven_flash_v2_5).
 
 MUSIC & SOUND EFFECTS
   Three Replicate models turn a prompt into audio; all save mp3 or wav and
@@ -1298,7 +1368,10 @@ MUSIC & SOUND EFFECTS
   -model music        ElevenLabs Music (elevenlabs/music) is the default music
                       model: a score, cue, or loop from -prompt, instrumental
                       by default (-instrumental=false for vocals), and it
-                      honors -duration exactly (5-300s, default 10).
+                      honors -duration exactly (5-300s, default 10). With an
+                      elevenlabs token it runs on the ElevenLabs API instead
+                      (POST /v1/music, music_v2_5, 3-600s); see ELEVENLABS
+                      DIRECT.
   -model music-vocal  MiniMax Music 2.6 (minimax/music-2.6; alias
                       -model minimax-music) writes a full song with vocals.
                       -prompt sets the style; -lyrics TEXT (or @song.txt)
@@ -1377,6 +1450,9 @@ TEXT TO SPEECH
     minimax/speech-2.8-hd  any system voice id or cloned id; list them with
                         curds run -schema minimax/speech-2.8-hd
 
+  On the direct ElevenLabs route (an elevenlabs token is set), -model
+  tts-elevenlabs is a different contract; see ELEVENLABS DIRECT.
+
   Flags that do not apply to the chosen TTS model are usage errors (exit 2):
   -emotion / -pitch belong to -model tts-minimax, -stability / -style to
   -model tts-elevenlabs, and -instructions to -model tts and -model
@@ -1384,6 +1460,52 @@ TEXT TO SPEECH
   tts-openai (Gemini has no speed knob), and -voice applies to all four, each
   with its own range and enum. Pipe a script in:
   cat script.txt | curds -model tts -output line.wav
+
+ELEVENLABS DIRECT
+  When an elevenlabs token resolves ([tokens] elevenlabs in the config, .env,
+  or ELEVENLABS_API_KEY), -model tts-elevenlabs and -model music call the
+  ElevenLabs API directly; without one they run on Replicate (elevenlabs/v3,
+  elevenlabs/music) exactly as described above. -provider replicate keeps
+  them on Replicate even with a token. Every run logs which route it took:
+  event=elevenlabs.route route=direct|replicate model=... reason=...
+
+  Text to speech: POST /v1/text-to-speech/{voice_id} with -tts-model as the
+  model_id (default eleven_v4, ElevenLabs' highest-quality model; also
+  eleven_v4_turbo, eleven_v3, eleven_multilingual_v2, eleven_flash_v2_5).
+    -voice     any voice id (account, premade, or shared library — ElevenLabs
+               adds a library voice to your account on first use), or a name
+               from your account (GET /v2/voices; "George" matches "George -
+               Warm, Captivating Storyteller"). Default: George. Find voices
+               with "curds voices".
+    text       audio tags in square brackets ([whispers], [laughs], [sighs],
+               [strong French accent]) are interpreted as delivery
+               directions on eleven_v4 and eleven_v3 — unlike Replicate's
+               elevenlabs/v3, which reads them aloud. Text caps: eleven_v4
+               10000 characters, eleven_v3 5000.
+    settings   -stability (all models); -similarity (all but eleven_v3);
+               -style, -speaker-boost (eleven_multilingual_v2); -speed
+               0.7-1.2 (eleven_multilingual_v2, eleven_flash_v2_5). A knob
+               the model does not take is a usage error naming
+               -tts-model eleven_multilingual_v2. -instructions, -emotion,
+               and -pitch do not apply.
+    output     mp3 asks for mp3_44100_192 and steps down to mp3_44100_128
+               when the plan refuses it (event=elevenlabs.format_fallback;
+               192 kbps needs the Creator tier). wav asks for wav_44100 (Pro
+               tier), then wav_24000.
+
+  Music: POST /v1/music with model_id music_v2_5, -prompt, force_instrumental
+  from -instrumental (default true), and music_length_ms from -duration
+  (3-600s; omit it and the model picks the length). mp3 asks for
+  mp3_48000_320, then 192 kbps, then mp3_44100_128. The endpoint has no wav,
+  so a .wav -output is transcoded locally via ffmpeg.
+
+VOICES SUBCOMMAND
+  curds voices [-search TEXT] [-accent ACCENT] [-gender GENDER] [-age AGE]
+               [-source all|account|library] [-limit N]
+    Lists your account's voices (GET /v2/voices) and searches the shared
+    voice library (GET /v1/shared-voices), one logfmt line per voice:
+    source, id, name, accent, age, gender, description. Pass the id to
+    -voice. Needs an elevenlabs token. See "curds voices -h".
 
 RUN SUBCOMMAND
   curds run [flags] OWNER/MODEL[:VERSION] [key=value ...]
@@ -1612,10 +1734,16 @@ EXAMPLES
         -prompt "The results, I'm afraid, are conclusive." \
         -output /tmp/line.wav
 
-  # ElevenLabs v3 with stability/style knobs (text is read verbatim)
-  curds -model tts-elevenlabs -voice Rachel -style 0.8 \
+  # ElevenLabs v3 on Replicate with stability/style knobs (text is read verbatim)
+  curds -provider replicate -model tts-elevenlabs -voice Rachel -style 0.8 \
         -prompt "Oh, brilliant. Another Monday." \
         -output /tmp/line.mp3
+
+  # ElevenLabs direct (needs an elevenlabs token): find a narrator, then
+  # speak with eleven_v4, audio tags interpreted
+  curds voices -search narrator -accent british -gender female
+  curds -model tts-elevenlabs -voice 3XD5qTvPWht0mpTnYXY0 -stability 0.4 \
+        -prompt "[whispers] It was a very long day." -output /tmp/line.mp3
 
   # OpenAI gpt-4o-mini-tts with delivery instructions
   curds -model tts-openai -voice sage -instructions "crisp British RP, dry" \
@@ -1642,6 +1770,7 @@ ENVIRONMENT
   OPENAI_API_KEY                 fallback OpenAI token
   REPLICATE_API_TOKEN            fallback Replicate token
   XAI_API_KEY                    fallback xAI token
+  ELEVENLABS_API_KEY             fallback ElevenLabs key (direct TTS/music)
   XDG_CONFIG_HOME                respected for default config path
 `
 }
@@ -2258,6 +2387,92 @@ func floatFlag(v float64, name string) *float64 {
 	return &v
 }
 
+// speakerBoostFlag reads -speaker-boost only when the user passed it, so the
+// voice's stored setting applies otherwise and -speaker-boost=false can turn
+// it off.
+func speakerBoostFlag(opts *cliOptions) *bool {
+	if !opts.speakerBoostSet {
+		return nil
+	}
+	v := opts.speakerBoost
+	return &v
+}
+
+// sentinelFloat turns a -1-defaulted flag into nil (unset) or its value.
+func sentinelFloat(v float64) *float64 {
+	if v < 0 {
+		return nil
+	}
+	return &v
+}
+
+// selectElevenLabsRoute decides where -model tts-elevenlabs and -model music
+// run. With an elevenlabs token (config, .env, or ELEVENLABS_API_KEY) they call
+// the ElevenLabs API directly; without one they stay on Replicate's
+// elevenlabs/v3 and elevenlabs/music, exactly as before. -provider replicate
+// keeps them on Replicate even with a token; -provider elevenlabs, or a raw
+// eleven_* / music_v* model id, asks for the direct route outright. On the
+// direct route it sets opts.provider and opts.directModel (the model_id sent
+// upstream). Either way the decision is logged as event=elevenlabs.route.
+func selectElevenLabsRoute(opts *cliOptions, cfg *config.Config, dotenv map[string]string, logger *logfmtLogger) error {
+	replicateModel := config.ResolveModel(cfg, opts.modelKey, curds.ProviderReplicate)
+	rawDirect := curds.IsElevenLabsDirectTTSModel(opts.modelKey) || curds.IsElevenLabsDirectMusicModel(opts.modelKey)
+	tts := curds.IsTTSElevenLabsModel(replicateModel) || curds.IsElevenLabsDirectTTSModel(opts.modelKey)
+	music := curds.IsMusicModel(replicateModel) || curds.IsElevenLabsDirectMusicModel(opts.modelKey)
+	ttsModel := strings.TrimSpace(opts.ttsModel)
+	switch {
+	case !tts && !music:
+		if ttsModel != "" {
+			return &usageError{err: errors.New("-tts-model is only supported by -model tts-elevenlabs (the direct ElevenLabs route)")}
+		}
+		return nil
+	case music && ttsModel != "":
+		return &usageError{err: errors.New("-tts-model applies to -model tts-elevenlabs, not -model music")}
+	case ttsModel != "" && !curds.IsElevenLabsDirectTTSModel(ttsModel):
+		return &usageError{err: fmt.Errorf("-tts-model %q is not an ElevenLabs text-to-speech model id (e.g. %s, eleven_v3, eleven_multilingual_v2)", ttsModel, curds.DefaultElevenLabsTTSModel)}
+	}
+
+	var reason string
+	switch {
+	case flagWasSet("provider") && opts.provider == curds.ProviderElevenLabs:
+		reason = "-provider elevenlabs"
+	case flagWasSet("provider"):
+		if opts.provider != curds.ProviderReplicate {
+			// Any other provider fails the provider/model pair check next.
+			return nil
+		}
+		logger.info("elevenlabs.route", "route", "replicate", "model", replicateModel, "reason", "-provider replicate")
+		if ttsModel != "" {
+			return &usageError{err: errors.New("-tts-model needs the direct ElevenLabs route; Replicate's elevenlabs/v3 has a fixed model (drop -provider replicate)")}
+		}
+		return nil
+	case rawDirect:
+		reason = "elevenlabs model id"
+	case config.ResolveToken(curds.ProviderElevenLabs, cfg, dotenv, os.Getenv) != "":
+		reason = "elevenlabs token"
+	default:
+		logger.info("elevenlabs.route", "route", "replicate", "model", replicateModel, "reason", "no elevenlabs token")
+		if ttsModel != "" {
+			return &usageError{err: fmt.Errorf("-tts-model needs the direct ElevenLabs route: set [tokens] elevenlabs in %s or ELEVENLABS_API_KEY", cfg.Path)}
+		}
+		return nil
+	}
+
+	model := curds.DefaultElevenLabsMusicModel
+	switch {
+	case tts && ttsModel != "":
+		model = ttsModel
+	case rawDirect:
+		model = opts.modelKey
+	case tts:
+		model = curds.DefaultElevenLabsTTSModel
+	}
+	opts.provider = curds.ProviderElevenLabs
+	opts.directModel = model
+	logger.info("elevenlabs.route", "route", "direct", "model", model, "reason", reason)
+	return nil
+}
+
 // validateAudioFlags enforces the audio contract before any network call: an
 // mp3/wav output needs an audio model, -lyrics belongs to -model music-vocal,
 // -duration has to sit inside the model's own range, and the TTS delivery
@@ -2266,7 +2481,7 @@ func floatFlag(v float64, name string) *float64 {
 // flag.
 func validateAudioFlags(model string, opts *cliOptions) error {
 	if !curds.IsTTSModel(model) && hasTTSFlags(opts) {
-		return errors.New("-voice, -emotion, -speed, -pitch, -instructions, -stability, and -style need a text-to-speech model: pass -model tts, -model tts-elevenlabs, or -model tts-openai")
+		return errors.New("-voice, -emotion, -speed, -pitch, -instructions, -stability, -style, -similarity, and -speaker-boost need a text-to-speech model: pass -model tts, -model tts-elevenlabs, or -model tts-openai")
 	}
 	if !curds.IsAudioModel(model) {
 		if opts.outputFormat == "mp3" || opts.outputFormat == "wav" {
@@ -2288,6 +2503,11 @@ func validateAudioFlags(model string, opts *cliOptions) error {
 		if opts.duration != 0 && (opts.duration < 5 || opts.duration > 300) {
 			return fmt.Errorf("-duration must be 5-300 seconds for -model music, got %g", opts.duration)
 		}
+	case curds.IsElevenLabsDirectMusicModel(model):
+		if opts.duration != 0 && (opts.duration < curds.MinElevenLabsMusicSeconds || opts.duration > curds.MaxElevenLabsMusicSeconds) {
+			return fmt.Errorf("-duration must be %d-%d seconds for -model music on the direct ElevenLabs route, got %g",
+				curds.MinElevenLabsMusicSeconds, curds.MaxElevenLabsMusicSeconds, opts.duration)
+		}
 	case curds.IsSFXModel(model):
 		if opts.duration != 0 && (opts.duration < 1 || opts.duration > 190) {
 			return fmt.Errorf("-duration must be 1-190 seconds for -model sfx, got %g", opts.duration)
@@ -2301,12 +2521,12 @@ func validateAudioFlags(model string, opts *cliOptions) error {
 }
 
 // hasTTSFlags reports whether the caller passed any of the TTS-only flags.
-// -stability / -style are detected by flag presence because 0 is a valid
-// value for both.
+// -stability / -style / -similarity are detected by flag presence because 0 is
+// a valid value for each.
 func hasTTSFlags(opts *cliOptions) bool {
 	return strings.TrimSpace(opts.voice) != "" || strings.TrimSpace(opts.emotion) != "" ||
 		opts.speed != 0 || opts.pitch != 0 || strings.TrimSpace(opts.instructions) != "" ||
-		flagWasSet("stability") || flagWasSet("style")
+		flagWasSet("stability") || flagWasSet("style") || opts.similaritySet || opts.speakerBoostSet
 }
 
 // validateTTSFlags checks the text-to-speech contract per model: miniMax's
@@ -2323,6 +2543,9 @@ func validateTTSFlags(model string, opts *cliOptions) error {
 	}
 	if strings.TrimSpace(opts.lyrics) != "" {
 		return errors.New("-lyrics is only supported by -model music-vocal")
+	}
+	if (opts.similaritySet || opts.speakerBoostSet) && !curds.IsElevenLabsDirectTTSModel(model) {
+		return errors.New("-similarity and -speaker-boost need the direct ElevenLabs route: -model tts-elevenlabs with an elevenlabs token (ELEVENLABS_API_KEY or [tokens] elevenlabs)")
 	}
 	textLen := utf8.RuneCountInString(opts.prompt)
 	switch {
@@ -2389,7 +2612,29 @@ func validateTTSFlags(model string, opts *cliOptions) error {
 			return fmt.Errorf("-style must be 0-1 for -model tts-elevenlabs, got %g", opts.style)
 		}
 		if opts.voice != "" && !curds.ElevenLabsTTSVoices[opts.voice] {
-			return fmt.Errorf("-voice %q is not a valid -model tts-elevenlabs voice (valid: %s)", opts.voice, curds.SortedNames(curds.ElevenLabsTTSVoices))
+			return fmt.Errorf("-voice %q is not a valid -model tts-elevenlabs voice on Replicate (valid: %s; any voice id works on the direct ElevenLabs route)", opts.voice, curds.SortedNames(curds.ElevenLabsTTSVoices))
+		}
+	case curds.IsElevenLabsDirectTTSModel(model):
+		// Any voice id or account voice name: the provider resolves names.
+		if opts.instructions != "" {
+			return errors.New("-instructions is not supported on the direct ElevenLabs route; put audio tags such as [whispers] in the text instead")
+		}
+		if opts.emotion != "" {
+			return errors.New("-emotion is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		if opts.pitch != 0 {
+			return errors.New("-pitch is only supported by -model tts-minimax (MiniMax Speech 2.8 HD)")
+		}
+		var similarity *float64
+		if opts.similaritySet {
+			similarity = &opts.similarity
+		}
+		if err := curds.CheckElevenLabsVoiceSettings(model, sentinelFloat(opts.stability), similarity,
+			sentinelFloat(opts.style), opts.speed, opts.speakerBoostSet); err != nil {
+			return err
+		}
+		if max := curds.ElevenLabsMaxChars(model); max > 0 && textLen > max {
+			return fmt.Errorf("text is %d characters; %s accepts at most %d", textLen, model, max)
 		}
 	case curds.IsOpenAITTSModel(model):
 		if opts.emotion != "" {
@@ -2435,6 +2680,8 @@ func envVarFor(provider string) string {
 		return "REPLICATE_API_TOKEN"
 	case "xai":
 		return "XAI_API_KEY"
+	case "elevenlabs":
+		return "ELEVENLABS_API_KEY"
 	}
 	return "(unknown)"
 }

@@ -440,3 +440,44 @@ func TestHelpTextMentionsElevenLabsDirect(t *testing.T) {
 		}
 	}
 }
+
+// Delivery markup is the script on the direct route: audio tags, ALL-CAPS
+// emphasis, and ellipses (ASCII and Unicode) must reach ElevenLabs byte for
+// byte, from -prompt and from stdin alike.
+func TestElevenLabsDirectTextPassesThroughUntouched(t *testing.T) {
+	const script = "[warmly] Welcome back... [confidently] This is the ONLY way to do it… [short pause] truly."
+	for _, viaStdin := range []bool{false, true} {
+		name := "-prompt"
+		if viaStdin {
+			name = "stdin"
+		}
+		t.Run(name, func(t *testing.T) {
+			ttsTestEnv(t)
+			t.Setenv("ELEVENLABS_API_KEY", "el-env")
+			el, calls := elevenLabsCLIStub(t)
+			withClient(t, &curds.Client{ElevenLabs: el})
+			args := []string{"-no-tui", "-model", "tts-elevenlabs", "-voice", "QJksobp1edMNvmwcG5lm",
+				"-output", filepath.Join(t.TempDir(), "line.mp3")}
+			if viaStdin {
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = w.WriteString(script + "\n")
+				_ = w.Close()
+				oldStdin := os.Stdin
+				os.Stdin = r
+				t.Cleanup(func() { os.Stdin = oldStdin })
+			} else {
+				args = append(args, "-prompt", script)
+			}
+			if _, err := runRealMain(t, args); err != nil {
+				t.Fatalf("realMain: %v", err)
+			}
+			posts := elevenLabsPosts(*calls)
+			if len(posts) != 1 || posts[0].body["text"] != script {
+				t.Fatalf("text must pass through untouched:\n got %#v\nwant %q", posts, script)
+			}
+		})
+	}
+}
